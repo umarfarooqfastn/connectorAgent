@@ -631,29 +631,87 @@ class UniversalWebScraper:
         return all_endpoints
     
     def _filter_page_content_for_ai(self, page_data: Dict) -> str:
-        """Send raw page data to AI - let AI decide what's relevant"""
+        """Filter page content to include full documentation while removing useless paragraphs"""
         title = page_data.get('title', '')
         text_content = page_data.get('text_content', '')
         code_blocks = page_data.get('code_blocks', [])
         
         # Skip obvious non-API pages
-        skip_keywords = ['privacy', 'terms', 'about', 'contact']
+        skip_keywords = ['privacy', 'terms', 'about', 'contact', 'careers', 'blog', 'showcase']
         if any(keyword in title.lower() for keyword in skip_keywords):
             return ""
         
-        # Build raw content for AI
-        raw_content = f"Title: {title}\n\n"
+        # Build comprehensive content for AI
+        filtered_content = f"# {title}\n\n"
         
-        # Add all code blocks (most likely place for cURL commands)
+        # Add all code blocks first (highest priority)
         if code_blocks:
-            raw_content += "Code Blocks:\n"
+            filtered_content += "## Code Examples:\n"
             for i, code in enumerate(code_blocks):
-                raw_content += f"```\n{code}\n```\n\n"
+                # Skip very short code snippets that aren't useful
+                if len(code.strip()) > 10:
+                    filtered_content += f"```\n{code}\n```\n\n"
         
-        # Add page text content
-        raw_content += f"Page Content:\n{text_content}\n"
+        # Filter and add text content with smart paragraph filtering
+        filtered_text = self._smart_filter_text_content(text_content)
+        if filtered_text:
+            filtered_content += f"## Documentation:\n{filtered_text}\n"
         
-        return raw_content
+        # Only return if we have substantial content
+        return filtered_content if len(filtered_content) > 100 else ""
+    
+    def _smart_filter_text_content(self, text_content: str) -> str:
+        """Smart filtering to keep API-relevant content and remove marketing fluff"""
+        if not text_content:
+            return ""
+        
+        # Split into paragraphs
+        paragraphs = [p.strip() for p in text_content.split('\n') if p.strip()]
+        
+        # Keywords that indicate useful API documentation
+        keep_keywords = [
+            'curl', 'http', 'api', 'endpoint', 'request', 'response', 'parameter', 'auth',
+            'bearer', 'token', 'header', 'body', 'json', 'get', 'post', 'put', 'delete',
+            'patch', 'query', 'path', 'required', 'optional', 'example', 'schema',
+            'application/json', 'authorization', 'content-type', 'accept'
+        ]
+        
+        # Keywords that indicate marketing/useless content
+        skip_keywords = [
+            'explore how', 'transform your', 'read the docs', 'sign up', 'log in',
+            'contact support', 'powered by', 'was this helpful', 'browse this site',
+            'accept cookies', 'privacy policy', 'terms of service', 'careers', 'blog',
+            'showcase', 'company', 'community', 'resources'
+        ]
+        
+        filtered_paragraphs = []
+        
+        for paragraph in paragraphs:
+            para_lower = paragraph.lower()
+            
+            # Skip very short paragraphs (likely navigation)
+            if len(paragraph) < 20:
+                continue
+            
+            # Skip marketing/navigation content
+            if any(skip_word in para_lower for skip_word in skip_keywords):
+                continue
+            
+            # Skip very long paragraphs (likely marketing content) unless they contain API keywords
+            if len(paragraph) > 500:
+                if not any(keep_word in para_lower for keep_word in keep_keywords):
+                    continue
+                # If it's long but has API content, truncate it
+                paragraph = paragraph[:500] + "..."
+            
+            # Keep paragraphs with API-relevant keywords
+            if any(keep_word in para_lower for keep_word in keep_keywords):
+                filtered_paragraphs.append(paragraph)
+            # Also keep shorter paragraphs that might be API descriptions
+            elif len(paragraph) < 200:
+                filtered_paragraphs.append(paragraph)
+        
+        return '\n\n'.join(filtered_paragraphs)
     
     def _extract_curls_from_page_with_ai(self, page_content: str, page_url: str, client) -> List[Dict]:
         """Use gpt-4.1-mini to extract cURL commands + names from raw page data"""
@@ -661,27 +719,44 @@ class UniversalWebScraper:
             response = client.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=[
-                    {"role": "system", "content": """Extract cURL commands from API documentation and give them meaningful names.
+                    {"role": "system", "content": """Extract and create proper cURL commands from API documentation for Fastn connector creation.
 
-Find all valid, complete cURL commands and assign descriptive names.
+You will receive full API documentation pages. Your job is to:
+
+1. **FIND ALL API ENDPOINTS** from the documentation (not just existing cURL commands)
+2. **CREATE PROPER cURL COMMANDS** from HTTP method descriptions, parameters, and examples
+3. **REMOVE AUTH HEADERS** - No Authorization, Bearer tokens, or API keys in cURL
+4. **MAP PATH PARAMETERS** - Convert {id} to <<url.id>>, {userId} to <<url.userId>>
+5. **INCLUDE QUERY PARAMETERS** - Add all documented query params (required + optional)
+6. **USE FULL URLS** - Complete https://domain.com/path format
+
+PARAMETER MAPPING EXAMPLES:
+- {organizationId} → <<url.organizationId>>
+- {spaceId} → <<url.spaceId>>
+- {userId} → <<url.userId>>
+- {teamId} → <<url.teamId>>
+
+QUERY PARAMETER EXAMPLES:
+- ?page=1&limit=50&order=desc (include documented optional params)
+- ?search=query&role=admin&sort=joinedAt
 
 OUTPUT FORMAT (JSON):
 [
   {
-    "name": "createChatCompletion",
-    "curl": "curl -X POST \"https://api.openai.com/v1/chat/completions\" -H \"Content-Type: application/json\" -H \"Authorization: Bearer $OPENAI_API_KEY\" -d '{\"model\": \"gpt-4\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello!\"}]}'"
+    "name": "listOrganizationMembers",
+    "curl": "curl -X GET \"https://api.gitbook.com/v1/orgs/<<url.organizationId>>/members?page=1&limit=50&order=desc\" -H \"Content-Type: application/json\" -H \"Accept: application/json\""
   },
   {
-    "name": "listModels", 
-    "curl": "curl -X GET \"https://api.openai.com/v1/models\" -H \"Authorization: Bearer $OPENAI_API_KEY\""
+    "name": "updateOrganizationMember",
+    "curl": "curl -X PATCH \"https://api.gitbook.com/v1/orgs/<<url.organizationId>>/members/<<url.userId>>\" -H \"Content-Type: application/json\" -H \"Accept: application/json\" -d '{\"role\": \"admin\"}'"
   }
 ]
 
-Return [] if no valid cURL commands found."""},
+Return [] if no API endpoints found."""},
                     {"role": "user", "content": f"Extract cURL commands from this page:\n\n{page_content}"}
                 ],
                 temperature=0.1,
-                max_tokens=2000
+                max_tokens=3000
             )
             
             result_text = response.choices[0].message.content.strip()
