@@ -885,6 +885,9 @@ Execute the complete workflow autonomously:
                 messages.append(message_dict)
                 
                 if message.tool_calls:
+                    # Process all tool calls and collect responses
+                    tool_responses = []
+                    
                     for tool_call in message.tool_calls:
                         function_name = tool_call.function.name
                         function_args = json.loads(tool_call.function.arguments)
@@ -907,18 +910,24 @@ Execute the complete workflow autonomously:
                                 "result": result
                             })
                             logger.info(f"✅ Endpoint created ({len(created_endpoints)}): {endpoint_name}")
-                            
-                            # Add context message to prevent future duplicates
-                            messages.append({
-                                "role": "system", 
-                                "content": f"CONTEXT UPDATE: You have created endpoint '{endpoint_name}'. Do NOT create another endpoint with the same name or functionality."
-                            })
                         
-                        messages.append({
+                        # Collect tool response
+                        tool_responses.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
                             "name": function_name,
                             "content": json.dumps(result)
+                        })
+                    
+                    # Add all tool responses at once
+                    messages.extend(tool_responses)
+                    
+                    # Add context update for created endpoints (only once per iteration)
+                    if any(endpoint for endpoint in created_endpoints):
+                        endpoint_names = [ep['name'] for ep in created_endpoints]
+                        messages.append({
+                            "role": "system", 
+                            "content": f"CONTEXT UPDATE: You have created {len(created_endpoints)} endpoint(s): {', '.join(endpoint_names)}. Do NOT create duplicate endpoints with the same names or functionality."
                         })
                 else:
                     logger.info(f"🎯 AI completed: {message.content}")
