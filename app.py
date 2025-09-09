@@ -419,6 +419,13 @@ class DataPersistence:
             json.dump(endpoints, f, indent=2, ensure_ascii=False)
         logger.info(f"🔗 Saved extracted endpoints to: {filepath}")
     
+    def save_llm_inputs(self, llm_inputs: List[Dict], filename: str = "llm_input_data.json"):
+        """Save what we feed to the LLM for debugging purposes"""
+        filepath = os.path.join(self.data_dir, filename)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(llm_inputs, f, indent=2, ensure_ascii=False)
+        logger.info(f"🤖 Saved LLM input data to: {filepath}")
+    
     def save_results(self, results: Dict, filename: str = "final_results.json"):
         filepath = os.path.join(self.data_dir, filename)
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -538,32 +545,179 @@ class UniversalWebScraper:
                     response.raise_for_status()
                     soup = BeautifulSoup(response.content, 'html.parser')
                 
-                # Remove scripts and styles
+                # Remove scripts and styles only
                 for script in soup(["script", "style"]):
                     script.decompose()
                 
-                # Universal content extraction
+                # COMPREHENSIVE content extraction - capture EVERYTHING
                 page_data = {
                     'url': current_url,
                     'title': soup.title.string if soup.title else '',
                     'headings': [],
                     'code_blocks': [],
+                    'tables': [],
+                    'lists': [],
+                    'paragraphs': [],
+                    'divs': [],
+                    'spans': [],
+                    'blockquotes': [],
+                    'sections': [],
+                    'articles': [],
                     'text_content': soup.get_text(),
                     'links': []
                 }
                 
-                # Extract headings
+                # Extract headings with full context
                 for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
                     page_data['headings'].append({
                         'level': int(heading.name[1]),
-                        'text': heading.get_text().strip()
+                        'text': heading.get_text().strip(),
+                        'html': str(heading)
                     })
                 
-                # Extract all code blocks
-                for code in soup.find_all(['code', 'pre']):
+                # Extract ALL code-related elements
+                for code in soup.find_all(['code', 'pre', 'kbd', 'samp', 'var']):
                     code_text = code.get_text().strip()
-                    if code_text and len(code_text) > 5:
-                        page_data['code_blocks'].append(code_text)
+                    if code_text and len(code_text) > 2:  # Lower threshold
+                        page_data['code_blocks'].append({
+                            'text': code_text,
+                            'tag': code.name,
+                            'class': code.get('class', []),
+                            'html': str(code)
+                        })
+                
+                # Extract tables (parameter tables are crucial for APIs)
+                for table in soup.find_all('table'):
+                    table_data = {
+                        'text': table.get_text().strip(),
+                        'html': str(table),
+                        'rows': []
+                    }
+                    for row in table.find_all('tr'):
+                        cells = [cell.get_text().strip() for cell in row.find_all(['td', 'th'])]
+                        if cells:
+                            table_data['rows'].append(cells)
+                    if table_data['rows']:
+                        page_data['tables'].append(table_data)
+                
+                # Extract lists (parameter lists, endpoint lists)
+                for list_elem in soup.find_all(['ul', 'ol', 'dl']):
+                    list_text = list_elem.get_text().strip()
+                    if list_text and len(list_text) > 10:
+                        page_data['lists'].append({
+                            'text': list_text,
+                            'tag': list_elem.name,
+                            'html': str(list_elem)
+                        })
+                
+                # HIERARCHICAL EXTRACTION - Extract from parent containers, skip nested elements
+                # Track extracted elements to avoid duplicates
+                # 
+                # STRATEGY: Process containers in priority order (sections → divs → paragraphs → blockquotes → spans)
+                # - If a container is small enough, extract it and mark ALL children as extracted (prevents duplication)
+                # - If a container is too large, skip it but DON'T mark children as extracted (allows individual processing)
+                # - This ensures useful child elements aren't lost when parent containers are too big
+                extracted_elements = set()
+                
+                # Priority 1: Extract sections and articles FIRST (highest level containers)
+                for section in soup.find_all(['section', 'article']):
+                    section_text = section.get_text().strip()
+                    # SIZE CHECK: Only keep sections under 1500 chars (~300 words)
+                    if section_text and len(section_text) > 50 and len(section_text) < 1500:
+                        page_data['sections'].append({
+                            'text': section_text,
+                            'tag': section.name,
+                            'class': section.get('class', []),
+                            'html': str(section)[:1000]
+                        })
+                        # Mark all child elements as extracted to avoid duplication
+                        for child in section.find_all():
+                            extracted_elements.add(child)
+                    # If section is too large, don't extract the section itself,
+                    # but don't mark children as extracted - let them be processed individually
+                
+                # Priority 2: Extract divs (but skip if already in a section/article)
+                for div in soup.find_all('div'):
+                    if div in extracted_elements:
+                        continue
+                        
+                    div_class = div.get('class', [])
+                    # Focus on API-related div classes
+                    api_classes = ['endpoint', 'parameter', 'example', 'code', 'request', 'response', 'method']
+                    if any(api_term in ' '.join(div_class).lower() for api_term in api_classes) or not div_class:
+                        div_text = div.get_text().strip()
+                        # SIZE CHECK: Only keep divs under 1000 chars (~200 words)
+                        if div_text and len(div_text) > 10 and len(div_text) < 1000:
+                            page_data['divs'].append({
+                                'text': div_text,
+                                'class': div_class,
+                                'html': str(div)[:1000]
+                            })
+                            # Mark all child elements as extracted
+                            for child in div.find_all():
+                                extracted_elements.add(child)
+                        # If div is too large, don't extract the div itself,
+                        # but don't mark children as extracted - let them be processed individually
+                
+                # Priority 3: Extract paragraphs (but skip if already in a div/section)
+                for p in soup.find_all('p'):
+                    if p in extracted_elements:
+                        continue
+                        
+                    p_text = p.get_text().strip()
+                    # SIZE CHECK: Only keep paragraphs under 800 chars (~160 words)
+                    if p_text and len(p_text) > 10 and len(p_text) < 800:
+                        page_data['paragraphs'].append({
+                            'text': p_text,
+                            'class': p.get('class', []),
+                            'html': str(p)
+                        })
+                        # Mark all child elements as extracted to avoid duplication
+                        for child in p.find_all():
+                            extracted_elements.add(child)
+                        # Mark this paragraph as extracted
+                        extracted_elements.add(p)
+                    # If paragraph is too large, don't extract the paragraph itself,
+                    # but don't mark children as extracted - let them be processed individually
+                
+                # Priority 4: Extract blockquotes (but skip if already in a container)
+                for blockquote in soup.find_all('blockquote'):
+                    if blockquote in extracted_elements:
+                        continue
+                        
+                    bq_text = blockquote.get_text().strip()
+                    if bq_text and len(bq_text) < 1200:  # Add size limit for consistency
+                        page_data['blockquotes'].append({
+                            'text': bq_text,
+                            'html': str(blockquote)
+                        })
+                        # Mark all child elements as extracted to avoid duplication
+                        for child in blockquote.find_all():
+                            extracted_elements.add(child)
+                        extracted_elements.add(blockquote)
+                    # If blockquote is too large, don't extract it,
+                    # but don't mark children as extracted - let them be processed individually
+                
+                # Priority 5: Extract ONLY standalone spans with specific API content
+                # Skip spans that are already inside extracted containers
+                for span in soup.find_all('span'):
+                    if span in extracted_elements:
+                        continue
+                        
+                    span_text = span.get_text().strip()
+                    # Only extract spans with very specific API-relevant content
+                    api_span_keywords = ['string', 'number', 'boolean', 'required', 'optional', 'enum', 
+                                        'get', 'post', 'put', 'delete', 'patch', 'application/json',
+                                        'bearer', 'token', 'auth', 'api', 'endpoint', 'header']
+                    
+                    if (span_text and len(span_text) > 2 and len(span_text) < 50 and
+                        any(keyword in span_text.lower() for keyword in api_span_keywords)):
+                        page_data['spans'].append({
+                            'text': span_text,
+                            'class': span.get('class', []),
+                            'html': str(span)
+                        })
+                        extracted_elements.add(span)
                 
                 # Add internal links for crawling
                 for link in soup.find_all('a', href=True):
@@ -605,6 +759,7 @@ class UniversalWebScraper:
         logger.info("🤖 Using AI to extract endpoints from raw page data...")
         
         all_endpoints = []
+        llm_inputs = []  # Track what we feed to LLM
         
         for url, page_data in raw_data['pages'].items():
             logger.info(f"🔍 AI processing page: {page_data.get('title', url)[:50]}...")
@@ -616,6 +771,16 @@ class UniversalWebScraper:
                 logger.info("⏭️ Skipping page - no relevant content")
                 continue
             
+            # Save what we're feeding to LLM for debugging
+            llm_input = {
+                'url': url,
+                'title': page_data.get('title', ''),
+                'filtered_content': filtered_content,
+                'content_length': len(filtered_content),
+                'timestamp': datetime.now().isoformat()
+            }
+            llm_inputs.append(llm_input)
+            
             # Extract cURLs from this page using AI
             page_curls = self._extract_curls_from_page_with_ai(filtered_content, url, client)
             
@@ -625,40 +790,184 @@ class UniversalWebScraper:
                     all_endpoints.append(curl_item)
                     logger.info(f"✅ AI extracted cURL: {curl_item['name']}")
         
+        # Save both endpoints and LLM inputs for debugging
         self.data_persistence.save_endpoints(all_endpoints)
+        self.data_persistence.save_llm_inputs(llm_inputs)
+        
         logger.info(f"🎯 AI extraction completed: {len(all_endpoints)} endpoints found")
+        logger.info(f"🤖 LLM input data saved: {len(llm_inputs)} pages processed")
         
         return all_endpoints
     
     def _filter_page_content_for_ai(self, page_data: Dict) -> str:
-        """Filter page content to include full documentation while removing useless paragraphs"""
+        """Feed EVERYTHING small to AI, only skip large content blocks"""
         title = page_data.get('title', '')
-        text_content = page_data.get('text_content', '')
-        code_blocks = page_data.get('code_blocks', [])
         
         # Skip obvious non-API pages
         skip_keywords = ['privacy', 'terms', 'about', 'contact', 'careers', 'blog', 'showcase']
         if any(keyword in title.lower() for keyword in skip_keywords):
             return ""
         
-        # Build comprehensive content for AI
+        # Build COMPREHENSIVE content - feed everything small, skip only large blocks
         filtered_content = f"# {title}\n\n"
+        total_size = len(filtered_content)
+        max_size = 20000  # Increased size limit
         
-        # Add all code blocks first (highest priority)
+        # Priority 1: ALL Code blocks (NEVER skip - highest priority)
+        code_blocks = page_data.get('code_blocks', [])
         if code_blocks:
-            filtered_content += "## Code Examples:\n"
-            for i, code in enumerate(code_blocks):
-                # Skip very short code snippets that aren't useful
-                if len(code.strip()) > 10:
-                    filtered_content += f"```\n{code}\n```\n\n"
+            section = "## Code Examples:\n"
+            for code_item in code_blocks:
+                if isinstance(code_item, dict):
+                    code_text = code_item.get('text', '')
+                    code_tag = code_item.get('tag', 'code')
+                else:
+                    code_text = str(code_item)
+                    code_tag = 'code'
+                
+                # NEVER skip any code blocks, even single words
+                if code_text.strip():
+                    addition = f"```{code_tag}\n{code_text}\n```\n\n"
+                    section += addition
+                    total_size += len(addition)
+            
+            if len(section) > 20:
+                filtered_content += section
         
-        # Filter and add text content with smart paragraph filtering
-        filtered_text = self._smart_filter_text_content(text_content)
-        if filtered_text:
-            filtered_content += f"## Documentation:\n{filtered_text}\n"
+        # Priority 2: ALL Tables (parameter info is crucial)
+        tables = page_data.get('tables', [])
+        if tables and total_size < max_size:
+            section = "## Tables:\n"
+            for table in tables:
+                table_text = table.get('text', '')
+                if table_text.strip():
+                    addition = f"```\n{table_text}\n```\n\n"
+                    if total_size + len(addition) < max_size:
+                        section += addition
+                        total_size += len(addition)
+            
+            if len(section) > 15:
+                filtered_content += section
         
-        # Only return if we have substantial content
-        return filtered_content if len(filtered_content) > 100 else ""
+        # Priority 3: ALL Headings (structure is important)
+        headings = page_data.get('headings', [])
+        if headings and total_size < max_size:
+            section = "## Headings:\n"
+            for heading in headings:
+                text = heading.get('text', '').strip()
+                if text:
+                    level = heading.get('level', 1)
+                    addition = f"{'#' * level} {text}\n"
+                    if total_size + len(addition) < max_size:
+                        section += addition
+                        total_size += len(addition)
+            
+            if len(section) > 15:
+                filtered_content += section + "\n"
+        
+        # Priority 4: ALL Lists (parameter lists, endpoint lists)
+        lists = page_data.get('lists', [])
+        if lists and total_size < max_size:
+            section = "## Lists:\n"
+            for list_item in lists:
+                list_text = list_item.get('text', '').strip()
+                if list_text:
+                    # Only skip if extremely long (over 2000 chars)
+                    if len(list_text) < 2000:
+                        addition = f"```\n{list_text}\n```\n\n"
+                        if total_size + len(addition) < max_size:
+                            section += addition
+                            total_size += len(addition)
+            
+            if len(section) > 15:
+                filtered_content += section
+        
+        # Priority 5: ALL Small Paragraphs (skip only huge ones)
+        paragraphs = page_data.get('paragraphs', [])
+        if paragraphs and total_size < max_size:
+            section = "## Paragraphs:\n"
+            for para in paragraphs:
+                para_text = para.get('text', '').strip()
+                if para_text:
+                    # Only skip very large paragraphs (over 800 chars)
+                    if len(para_text) < 800:
+                        addition = f"{para_text}\n\n"
+                        if total_size + len(addition) < max_size:
+                            section += addition
+                            total_size += len(addition)
+            
+            if len(section) > 15:
+                filtered_content += section
+        
+        # Priority 6: ALL Divs (contain parameter info)
+        divs = page_data.get('divs', [])
+        if divs and total_size < max_size:
+            section = "## Divs:\n"
+            for div in divs:
+                div_text = div.get('text', '').strip()
+                if div_text:
+                    # Only skip very large divs (over 1000 chars)
+                    if len(div_text) < 1000:
+                        addition = f"{div_text}\n\n"
+                        if total_size + len(addition) < max_size:
+                            section += addition
+                            total_size += len(addition)
+            
+            if len(section) > 15:
+                filtered_content += section
+        
+        # Priority 7: ALL Spans (parameter names, types, values)
+        spans = page_data.get('spans', [])
+        if spans and total_size < max_size:
+            section = "## Spans:\n"
+            for span in spans:
+                span_text = span.get('text', '').strip()
+                if span_text:
+                    # Feed ALL spans - they contain crucial parameter info
+                    addition = f"{span_text}\n"
+                    if total_size + len(addition) < max_size:
+                        section += addition
+                        total_size += len(addition)
+            
+            if len(section) > 15:
+                filtered_content += section + "\n"
+        
+        # Priority 8: ALL Blockquotes (important notes)
+        blockquotes = page_data.get('blockquotes', [])
+        if blockquotes and total_size < max_size:
+            section = "## Notes:\n"
+            for bq in blockquotes:
+                bq_text = bq.get('text', '').strip()
+                if bq_text:
+                    addition = f"> {bq_text}\n\n"
+                    if total_size + len(addition) < max_size:
+                        section += addition
+                        total_size += len(addition)
+            
+            if len(section) > 15:
+                filtered_content += section
+        
+        # Priority 9: ALL Sections/Articles
+        sections = page_data.get('sections', [])
+        if sections and total_size < max_size:
+            section = "## Sections:\n"
+            for sect in sections:
+                sect_text = sect.get('text', '').strip()
+                if sect_text:
+                    # Only skip very large sections
+                    if len(sect_text) < 1500:
+                        addition = f"{sect_text}\n\n"
+                        if total_size + len(addition) < max_size:
+                            section += addition
+                            total_size += len(addition)
+            
+            if len(section) > 15:
+                filtered_content += section
+        
+        # Add final size info
+        filtered_content += f"\n<!-- Content Size: {total_size} characters -->\n"
+        
+        return filtered_content if total_size > 100 else ""
     
     def _smart_filter_text_content(self, text_content: str) -> str:
         """Smart filtering to keep API-relevant content and remove marketing fluff"""
@@ -712,6 +1021,33 @@ class UniversalWebScraper:
                 filtered_paragraphs.append(paragraph)
         
         return '\n\n'.join(filtered_paragraphs)
+    
+    def _is_api_relevant_text(self, text: str) -> bool:
+        """Check if text contains API-relevant information"""
+        if not text or len(text) < 20:
+            return False
+        
+        text_lower = text.lower()
+        
+        # API-relevant keywords
+        api_keywords = [
+            'endpoint', 'parameter', 'query', 'header', 'body', 'request', 'response',
+            'curl', 'http', 'get', 'post', 'put', 'delete', 'patch', 'api',
+            'authorization', 'bearer', 'token', 'required', 'optional',
+            'json', 'application/json', 'content-type', 'accept',
+            'path', 'url', 'method', 'status', 'code', 'example'
+        ]
+        
+        # Skip marketing/navigation content
+        skip_keywords = [
+            'sign up', 'log in', 'explore how', 'powered by', 'contact support',
+            'was this helpful', 'browse this site', 'accept cookies'
+        ]
+        
+        if any(skip in text_lower for skip in skip_keywords):
+            return False
+            
+        return any(keyword in text_lower for keyword in api_keywords)
     
     def _extract_curls_from_page_with_ai(self, page_content: str, page_url: str, client) -> List[Dict]:
         """Use gpt-4.1-mini to extract cURL commands + names from raw page data"""
@@ -894,7 +1230,11 @@ def autonomous_universal_agent(url: str, platform_name: str, description: str = 
         logger.info("🌐 STEP 1: UNIVERSAL WEB SCRAPING")
         logger.info("="*60)
         
-        raw_data = scraper.scrape_comprehensive(url, max_pages=10)
+        # Get max pages from environment variable, default to 10
+        max_pages = int(os.getenv("MAX_PAGES", "10"))
+        logger.info(f"🔢 Max pages to scrape: {max_pages}")
+        
+        raw_data = scraper.scrape_comprehensive(url, max_pages=max_pages)
         
         # STEP 2: AI-Powered Endpoint Extraction  
         logger.info("\n" + "="*60)

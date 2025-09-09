@@ -44,6 +44,9 @@ FASTN_PASSWORD=your_fastn_password
 FASTN_CLIENT_ID=fastn-app
 FASTN_CLIENT_SPACE_ID=your_client_space_id
 FASTN_REDIRECT_URI=https://google.com
+
+# Scraping Configuration
+MAX_PAGES=10    # Maximum number of pages to scrape (default: 10)
 ```
 
 ## Usage
