@@ -22,12 +22,17 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-3. Copy the example environment file and configure your credentials:
+3. Install Chrome browser (required for Selenium):
+   - **macOS**: `brew install --cask google-chrome`
+   - **Ubuntu**: `sudo apt-get install google-chrome-stable`  
+   - **Windows**: Download from Google Chrome website
+
+4. Copy the example environment file and configure your credentials:
 ```bash
 cp .env.example .env
 ```
 
-4. Edit `.env` file with your actual credentials:
+5. Edit `.env` file with your actual credentials:
 ```bash
 # OpenAI API Configuration
 OPENAI_API_KEY=your_openai_api_key_here
@@ -69,16 +74,19 @@ The agent creates:
 
 ## Features
 
-- Autonomous operation (no manual intervention required)
-- Intelligent duplicate detection
-- Support for multiple authentication types (OAuth, API Key, Bearer Token, etc.)
-- Comprehensive logging and data persistence
-- Error handling and retry logic
+- **Autonomous operation** (no manual intervention required)
+- **JavaScript support** (Selenium WebDriver for dynamic content)
+- **Intelligent duplicate detection**
+- **Multiple authentication types** (OAuth, API Key, Bearer Token, etc.)
+- **Comprehensive logging and data persistence**
+- **Error handling and retry logic**
+- **Fallback scraping** (tries Selenium first, falls back to requests)
 
 ## Requirements
 
 - Python 3.7+
 - OpenAI API key
+- Chrome browser (for Selenium WebDriver)
 - Internet connection
 - Fastn.ai account credentials
 - Access to Fastn QA environment (or production with appropriate configuration)

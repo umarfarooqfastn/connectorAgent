@@ -10,6 +10,14 @@ import re
 from typing import Dict, List, Optional
 import logging
 from datetime import datetime
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, WebDriverException
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.service import Service
 
 load_dotenv()
 
@@ -418,15 +426,86 @@ class DataPersistence:
         logger.info(f"🎯 Saved final results to: {filepath}")
 
 class UniversalWebScraper:
-    def __init__(self, data_persistence: DataPersistence):
+    def __init__(self, data_persistence: DataPersistence, use_selenium=False):
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
         self.data_persistence = data_persistence
-        logger.info("🌐 UniversalWebScraper initialized")
+        self.use_selenium = use_selenium
+        self.driver = None
+        
+        if use_selenium:
+            self._init_selenium_driver()
+        
+        logger.info(f"🌐 UniversalWebScraper initialized (Selenium: {'enabled' if use_selenium else 'disabled'})")
     
-    def scrape_comprehensive(self, base_url: str, max_pages: int = 50) -> Dict:
+    def _init_selenium_driver(self):
+        """Initialize Selenium WebDriver with Chrome"""
+        try:
+            chrome_options = Options()
+            chrome_options.add_argument('--headless')  # Run in background
+            chrome_options.add_argument('--no-sandbox')
+            chrome_options.add_argument('--disable-dev-shm-usage')
+            chrome_options.add_argument('--disable-gpu')
+            chrome_options.add_argument('--window-size=1920,1080')
+            chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
+            
+            # Use ChromeDriverManager to handle driver installation
+            service = Service(ChromeDriverManager().install())
+            self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            logger.info("✅ Selenium WebDriver initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Selenium WebDriver: {str(e)}")
+            self.use_selenium = False
+            self.driver = None
+    
+    def _scrape_with_selenium(self, url: str) -> BeautifulSoup:
+        """Scrape a single page using Selenium for JavaScript-heavy sites"""
+        try:
+            logger.info(f"🤖 Using Selenium to scrape: {url}")
+            self.driver.get(url)
+            
+            # Wait for page to load and JavaScript to execute
+            WebDriverWait(self.driver, 15).until(
+                lambda driver: driver.execute_script("return document.readyState") == "complete"
+            )
+            
+            # Additional wait for dynamic content (code blocks, API docs)
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    EC.any_of(
+                        EC.presence_of_element_located((By.TAG_NAME, "pre")),
+                        EC.presence_of_element_located((By.TAG_NAME, "code")),
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "[class*='code']")),
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "[class*='api']"))
+                    )
+                )
+            except TimeoutException:
+                logger.info("⏱️ No code blocks found, but page loaded - continuing...")
+            
+            # Get page source after JavaScript execution
+            page_source = self.driver.page_source
+            return BeautifulSoup(page_source, 'html.parser')
+            
+        except TimeoutException:
+            logger.warning(f"⏱️ Selenium timeout for {url} - falling back to requests")
+            return None
+        except WebDriverException as e:
+            logger.error(f"❌ Selenium error for {url}: {str(e)}")
+            return None
+    
+    def __del__(self):
+        """Clean up Selenium driver"""
+        if self.driver:
+            try:
+                self.driver.quit()
+                logger.info("🔒 Selenium WebDriver closed")
+            except:
+                pass
+    
+    def scrape_comprehensive(self, base_url: str, max_pages: int = 10) -> Dict:
         """Universal scraping for any API documentation format"""
         logger.info(f"🌐 Starting universal scraping of: {base_url}")
         
@@ -448,10 +527,16 @@ class UniversalWebScraper:
                 page_count += 1
                 logger.info(f"📄 Scraping page {page_count}/{max_pages}: {current_url}")
                 
-                response = self.session.get(current_url, timeout=30)
-                response.raise_for_status()
+                # Try Selenium first if enabled, fall back to requests
+                soup = None
+                if self.use_selenium and self.driver:
+                    soup = self._scrape_with_selenium(current_url)
                 
-                soup = BeautifulSoup(response.content, 'html.parser')
+                if soup is None:
+                    # Fall back to regular requests
+                    response = self.session.get(current_url, timeout=30)
+                    response.raise_for_status()
+                    soup = BeautifulSoup(response.content, 'html.parser')
                 
                 # Remove scripts and styles
                 for script in soup(["script", "style"]):
@@ -671,12 +756,13 @@ def call_fastn_api(function_name: str, function_args: Dict) -> Dict:
         return {"error": "Failed to generate Fastn auth token"}
     
     env = os.getenv("FASTN_ENV", "qa.fastn.ai")
-    client_id = os.getenv("FASTN_CLIENT_SPACE_ID", "b034812a-7d77-4e8e-945e-106656b2676e")
+    client_id = os.getenv("FASTN_CLIENT_SPACE_ID")
+    client_id_ = "b034812a-7d77-4e8e-945e-106656b2676e"
     url = f"https://{env}/api/v1/connectorCreationHelper"
     
     headers = {
         "Content-Type": "application/json",
-        "x-fastn-space-id": client_id,
+        "x-fastn-space-id": client_id_,
         "x-fastn-space-tenantid": "",
         "stage": "LIVE",
         "x-fastn-custom-auth": "true",
@@ -710,6 +796,8 @@ def call_fastn_api(function_name: str, function_args: Dict) -> Dict:
 def autonomous_universal_agent(url: str, platform_name: str, description: str = "", connector_group_id: str = None) -> Dict:
     """Universal autonomous agent with original system prompt"""
     
+    start_time = time.time()
+    
     logger.info("🤖 STARTING AUTONOMOUS UNIVERSAL AGENT")
     logger.info("=" * 60)
     logger.info(f"🎯 Platform: {platform_name}")
@@ -719,7 +807,10 @@ def autonomous_universal_agent(url: str, platform_name: str, description: str = 
     
     # Initialize components
     data_persistence = DataPersistence(platform_name)
-    scraper = UniversalWebScraper(data_persistence)
+    
+    # Enable Selenium for JavaScript-heavy sites (you can make this configurable)
+    use_selenium = True  # Set to False for static HTML sites
+    scraper = UniversalWebScraper(data_persistence, use_selenium=use_selenium)
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     
     try:
@@ -728,7 +819,7 @@ def autonomous_universal_agent(url: str, platform_name: str, description: str = 
         logger.info("🌐 STEP 1: UNIVERSAL WEB SCRAPING")
         logger.info("="*60)
         
-        raw_data = scraper.scrape_comprehensive(url)
+        raw_data = scraper.scrape_comprehensive(url, max_pages=10)
         
         # STEP 2: AI-Powered Endpoint Extraction  
         logger.info("\n" + "="*60)
@@ -937,6 +1028,12 @@ Execute the complete workflow autonomously:
                 logger.error(f"❌ AI error in iteration {iteration}: {str(e)}")
                 break
         
+        # Calculate execution time
+        end_time = time.time()
+        execution_time = end_time - start_time
+        execution_minutes = execution_time // 60
+        execution_seconds = execution_time % 60
+        
         # Final results
         final_results = {
             "platform_name": platform_name,
@@ -951,7 +1048,9 @@ Execute the complete workflow autonomously:
             "execution_summary": {
                 "total_iterations": iteration,
                 "endpoints_created": len(created_endpoints),
-                "completion_timestamp": datetime.now().isoformat()
+                "completion_timestamp": datetime.now().isoformat(),
+                "execution_time_seconds": round(execution_time, 2),
+                "execution_time_formatted": f"{int(execution_minutes)}m {execution_seconds:.2f}s"
             }
         }
         
@@ -959,12 +1058,19 @@ Execute the complete workflow autonomously:
         
         logger.info("🎉 AUTONOMOUS UNIVERSAL AGENT COMPLETED!")
         logger.info(f"📊 Pages: {raw_data.get('total_pages_scraped', 0)} | Endpoints: {len(extracted_endpoints)}")
+        logger.info(f"⏱️ Total execution time: {int(execution_minutes)}m {execution_seconds:.2f}s")
         
         return final_results
         
     except Exception as e:
+        end_time = time.time()
+        execution_time = end_time - start_time
+        execution_minutes = execution_time // 60
+        execution_seconds = execution_time % 60
+        
         error_msg = f"💥 Critical error: {str(e)}"
         logger.error(error_msg)
+        logger.info(f"⏱️ Execution time before error: {int(execution_minutes)}m {execution_seconds:.2f}s")
         return {"error": str(e)}
 
 def main():
@@ -992,6 +1098,7 @@ def main():
         print(f"📊 Pages: {result.get('scraping_summary', {}).get('total_pages_scraped', 0)}")
         print(f"🔍 Extracted: {result.get('scraping_summary', {}).get('endpoints_extracted', 0)}")
         print(f"🏗️ Created: {result.get('execution_summary', {}).get('endpoints_created', 0)}")
+        print(f"⏱️ Execution time: {result.get('execution_summary', {}).get('execution_time_formatted', 'Unknown')}")
         
         created_endpoints = result.get('created_endpoints', [])
         if created_endpoints:
