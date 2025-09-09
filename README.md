@@ -44,19 +44,19 @@ FASTN_REDIRECT_URI=https://google.com
 ## Usage
 
 ```bash
-python connectorAgent.py <url> <platform_name> [description] [connector_group_id]
+python app.py <url> <platform_name> [description] [connector_group_id]
 ```
 
 ### Examples
 
 Create new connector group:
 ```bash
-python connectorAgent.py https://docs.openai.com/api OpenAI "OpenAI API integration"
+python app.py https://docs.openai.com/api OpenAI "OpenAI API integration"
 ```
 
 Use existing connector group:
 ```bash
-python connectorAgent.py https://api.stripe.com/docs Stripe "Payment processing" existing_group_id
+python app.py https://api.stripe.com/docs Stripe "Payment processing" existing_group_id
 ```
 
 ## Output
@@ -65,7 +65,7 @@ The agent creates:
 - **Connector Groups**: With proper authentication configuration
 - **Connector Endpoints**: From extracted cURL commands
 - **Local Data**: Scraped data and results saved in `scraped_data/` directory
-- **Logs**: Execution logs in `connectorAgent.log`
+- **Logs**: Execution logs in `app.log`
 
 ## Features
 

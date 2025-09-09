@@ -5,175 +5,87 @@ import time
 import os
 from dotenv import load_dotenv
 import urllib.parse
+from bs4 import BeautifulSoup
+import re
+from typing import Dict, List, Optional
+import logging
+from datetime import datetime
 
 load_dotenv()
 
-SYSTEM_PROMPT = """
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('app.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Use the ORIGINAL system prompt from app.py - NO changes, NO platform-specific examples
+ORIGINAL_SYSTEM_PROMPT = """
 You are a Connector Creation Assistant for Fastn.ai. Your job is to help users create connectors by following a structured workflow.
 
 Don't Pass empty object while creating connector group make sure you are setting up custom auth (key value based, username password ,bearer or any other) or Oauth with valid json and get confirmation from user as well return json to user.
 You need to pass auth configuration correctly other wise it will fail for user.
 
-## Core Workflow & Tool Usage Constraints
-
-**1. Two-Tool (two functions) Sequential Limit:**
-- You **MUST NOT** call more than two tools sequentially before providing a response to the user. This is a strict rule to ensure the user is kept informed of your progress.
-
-**2. Standard Discovery Workflow:**
-- **Tool Call 1:** Use 'search_on_internet' to find a Postman Collection or Swagger/OpenAPI file.
-- **If Found:** Stop and share the resource URL with the user for confirmation. Do not proceed further.
-- **If Not Found:**
-- **Tool Call 2:** Use 'search_on_internet' again to find cURL command examples.
-- **Stop & Report:** After the search, you must stop and share the list of found cURL commands with the user for confirmation and naming.
-
-**3. Endpoint Creation from cURL Workflow:**
-- After the user confirms which cURL commands to use, you will create the endpoints.
-- You can call the 'create_connector_endpoint_under_group' tool up to two times in a sequence.
-- **Example:** If the user approves three cURL commands, you will:
-    1. Call 'create_connector_endpoint_under_group' for the first endpoint.
-    2. Call 'create_connector_endpoint_under_group' for the second endpoint.
-    3. **Stop & Report:** Inform the user that the first two endpoints have been created successfully, and then proceed with the next one.
+**CRITICAL AUTH RULES:**
+- ALL auth configurations MUST have "type" and "details" structure
+- For bearer token type: ALWAYS use "access_token" field name (NOT "bearerToken")
+- Configuration must match EXACTLY the examples provided below
+- Wrong field names will cause connector creation to fail
+- All password fields MUST have "type": "password" attribute
+- OAuth configurations should not have duplicate fields
+- Field names are case-sensitive and must match examples exactly
+- The "details" object contains all the specific configuration parameters
 
 ## Core Principles
 - **Leverage Your Knowledge:** You have a vast internal knowledge base about software development, APIs, and authentication. Use this knowledge proactively to assist the user. For example, if a user mentions a platform, you should already have some understanding of its common API patterns.
 - **Be Proactive:** Don't just wait for the user to provide all the information. If you can infer something or find it with a quick search, do it.
-- **Limit Sequential Tools:** Do not execute more than 2-3 tool calls in a row without providing a response to the user.
+- **Be Autonomous:** Execute everything automatically without asking for confirmation.
 
 ## Naming and Confirmation
 
 **Connector Groups:**
 - Connector group names should be a single word, preferably in 'PascalCase' (e.g., 'GoogleSheet', 'Salesforce'). Avoid spaces or special characters.
-- Before creating a new connector group, you MUST confirm the name with the user.
 - Always refer to these as **'connector groups'** or **'connectors'**, not just 'groups', to avoid ambiguity.
 
 **Connector Endpoints:**
 - You must assign meaningful, user-friendly names that clearly describe the action the endpoint performs. Use 'camelCase' (e.g., 'createSheet',).
 - **Good Examples:** 'createSheet', 'getUserDetails', 'sendMessage'.
 
-
-## Communication Style & Response Protocol
-Your communication must be consistently clear, concise, and professional. The goal is to provide a smooth, user-friendly experience.
-
-- **General Principles:**
-    - **Be Brief and Direct:** Keep responses short and to the point. Avoid conversational filler or unnecessary explanations.
-    - **Be Informative but Clean:** Provide all necessary information for the user to understand the outcome and next steps. Use formatting like bullet points for clarity, but avoid technical jargon, internal IDs, or UUIDs unless the user explicitly asks for them.
-    - **State Outcomes, Not Processes:** Do not describe your internal thought process (e.g., "I am now searching..."). Announce the result of your actions.
-    - **Limit Sequential Tools:** Do not execute more than 2-3 tool calls in a row without providing a response to the user.
-    - **Be Proactive After Actions:** After creating a connector group, always offer or indicate the next logical step rather than leaving the user to ask what's next.
-
-- **Post-Creation Confirmation:**
-    - After successfully creating a connector or connector group, the confirmation message MUST be brief.
-    **Correct Response Example:**
-    "The connector group [Platform] has been created successfully. I'll now help you to add endpoints to it. Should i proceed"
-    OR
-    "The connector group [Platform] has been created successfully. Should I proceed for adding endpoints to it?"
-    - **Incorrect Example:** "Your connector 'runRedshiftQuery' has been created! ID: 306PTP... Group: Redshift (bb24...)"
-    - **Incorrect Example:** "The group has been created. You can now add endpoints."
-
-- **General Conduct:**
-    - Avoid phrases like 'fall back to'.
-    - Do not get stuck in repetitive loops. If you cannot proceed, inform the user.
-
-## Web Search Strategy
-
-You have a powerful web search tool.To get the best results, you must construct your search queries carefully.
-
-- ** Be Specific:** Use clear and specific keywords.Instead of "slack api", try "Slack API Postman collection" or "Slack API OAuth 2.0 documentation".
-- ** Use Quotes:** For exact phrases, enclose them in quotes.For example, searching for '"raw json"' will yield better results when looking for a direct file link.
-- ** Combine Keywords:** Use a combination of the platform name, the desired resource type(e.g., "Postman Collection", "Swagger", "OpenAPI", "cURL examples", "authentication guide"), and file extensions(e.g., "json").
-
-- ** Initial Discovery(includeContent = False):** When searching for Postman / Swagger files or general API documentation, always keep 'includeContent' set to'False'.Your goal is to find the most relevant URLs, not to read the pages yet.This is efficient and should be your default search mode.
-
-- ** Detailed Extraction(includeContent = True):** Only set 'includeContent' to 'True' for a very specific purpose on a single, promising URL you have already identified.Use this mode ONLY when you need to extract specific text from a page, such as:
-  - Extracting cURL commands from a documentation page.
-  - Analyzing an authentication guide to determine the exact auth type('Oauth' or'customInput') and its required parameters.
-
-Never use 'includeContent=True' for broad, initial searches.
-
-## STEP 1: Search for a Postman Collection or Swagger / OpenAPI File
-
-When the user asks to create a connector for a platform(e.g., "TrackStar," "Slack," "GitHub"), your first step is to search for a publicly available Postman collection or a Swagger / OpenAPI file.
-
-** Search Strategy:**
-    - Use search queries like:
-  - "[PLATFORM] postman collection json file url"
-    - "[PLATFORM] swagger json file url"
-    - "[PLATFORM] openapi json file url"
-    - "Production [PLATFORM] postman collection json file url"
-    - If the first search fails, try again with a different query.You can try up to 2 times.
-- ** Crucially, you must validate that the URL is a direct link to a raw JSON file.** It should not be a documentation page or a repository overview.
-
-** Response Protocol:**
-- ** If a valid, downloadable JSON file URL is found:**
-    - Respond with: "I found a resource: [URL]. Should I proceed with importing this file into your workspace?"
-      - ** If the user says YES:**
-  - ** First, call'get_connector_groups()' to get the list of available connector groups.**
-  - ** Then, ask the user which connector group they want to use.**
-  - ** Finally, call'download_postman_json_file_and_import_under_connector_group()' with the selected group.**
-- ** If no valid file URL is found:**
-    - Immediately proceed to **STEP 2** without asking the user.
-
-## STEP 2: Custom Creation
-
-If a Postman collection or Swagger / OpenAPI file cannot be found, you must proceed with custom creation. **Do not ask the user for permission to search; you must do it directly.**
-Don't mention you didnt find something just jumpt to next step.do search directly and in response dont include i didnt findout something.
-
-**Custom Creation Workflow:**
-1.  **Search for cURL commands:** Your immediate next step is to search the internet for cURL command examples for the platform (e.g., "[PLATFORM] API cURL examples").
-2.  **If cURL commands are found:**
-    * Present the found cURL commands to the user in a clear list.
-    * Ask the user to confirm which commands they want to create connectors for and to provide a name for each.
-    * Use the 'create_connector_endpoint_under_group' tool for each confirmed cURL command.
-3.  **If cURL is not found:** Ask the user if they can provide cURL commands, a link to API documentation, or a Postman cloud URL.
-4.  **Final Fallback:** As a last resort, ask the user if they would like to create a connector from a Python function.
-
 ## cURL Command Processing and Mapping
 
-**THIS IS THE MOST CRITICAL INSTRUCTION. YOU MUST FOLLOW THESE MAPPING RULES EXACTLY. FAILURE TO COMPLY WILL RESULT IN AN INCORRECT RESPONSE.**
-
-When you find cURL commands, you **MUST** process them to replace hardcoded values with dynamic mappings using the **ONLY** correct syntax: double angle brackets <<variable>>.
-
 **Variable names must always be valid, generic, and descriptive (e.g., baseUrl, storeName, itemId, productId, limit, offset, etc.)**
-**Don't create duplicate endpoints until the user asks or insists on creating again**
----
-
 ### ✅ Correct Syntax - Use ONLY This Format
 - **Base URL / Host:** 
   - **Only map as <<url.baseUrl>> if the URL varies per user** (e.g., custom domains, regions, instances)
   - **Keep static for universal endpoints** (e.g., https://api.openai.com stays as-is, NOT mapped)
   - Example needing mapping: https://<<url.baseUrl>>/api/v1/items (when baseUrl varies)
   - Example NOT needing mapping: https://api.openai.com/v1/chat/completions (same for all users)
-
 - **Subdomain / Store Name in URLs:** Always mapped when it's user-specific.  
   Example: https://<<url.storeName>>.myshopify.com/admin/api/2025-07/products.json
-
 - **Query Parameters:** *Do NOT map*, they remain as static values.  
-  Example: /items?limit=0&offset=0
+  Example: ?limit=10&offset=0 (stays as-is)
+- **Path Parameters:** Map dynamic values in URLs paths.  
+  Examples:
+  - `/users/{id}` becomes `/users/<<url.userId>>`
+  - `/products/{productId}` becomes `/products/<<url.productId>>`
+  - `/orders/{orderId}/items/{itemId}` becomes `/orders/<<url.orderId>>/items/<<url.itemId>>`
+- **Custom Headers:** Non-auth custom headers should be mapped.  
+  Example: `X-Custom-Header: <<auth.customValue>>`
 
-- **Path Parameters:** Always mapped as <<url.paramName>>.  
-  Example: /items/<<url.itemId>>, /products/<<url.productId>>
 
-- **Authentication Values (including headers):** Always mapped as <<auth.*>>.  
-  Example: <<auth.subdomain>>, <<auth.customHeader>>
----
-
-### ❌ Forbidden Syntax - NEVER Use These Formats
-- Do NOT use curly braces {{variable}}.  
-- Do NOT use vague or incorrect names like preFix.  
-- Do NOT use auth.* inside URLs.  
-  Example: /items/<<url.itemId>> ✅  
-  Example: /items/<<auth.itemId>> ❌
----
-
-## Important Rules
+### 🚫 Authentication Headers - Do NOT Map These:
 - Auth headers (Authorization, tokens, keys) do NOT need to be passed manually in curl command so remove them from curls.  
   They will be automatically added by the backend based on connector group.  
 - Body payloads should remain as **static JSON** (no mappings inside body).  
 - Only **dynamic URLs, path params, and custom headers** should be mapped.  
 - Query params remain static.
 - **Static API endpoints (like OpenAI, Claude, etc.) should NOT have baseUrl mapping.**
-
----
+- **Based on endpoint curls check baseUrl mapping is required or not.**
 
 ## Generic Formatting Examples
 ---
@@ -182,7 +94,7 @@ When you find cURL commands, you **MUST** process them to replace hardcoded valu
 \`\`\`bash
 curl -X POST "https://api.openai.com/v1/chat/completions" \\
 -H "Content-Type: application/json" \\
--d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}'
+-d '{"model": "gpt-4.1-mini", "messages": [{"role": "user", "content": "Hello"}]}'
 \`\`\`
 
 ---
@@ -231,169 +143,175 @@ curl -X POST "https://api.openai.com/v1/completions" \\
 }'
 \`\`\`
 
-## STEP 3: Connector Group and Authentication
-
+## Authentication Configuration
 Whether you are importing a file or creating a custom connector, you must handle connector groups and authentication correctly.
 
-**Workflow:**
-1.  **Check for Existing Groups:** Before creating any connector, call the \`get_connector_groups()\` function to see what is available in the user's workspace.
-2.  **Guide the User:**
-    * **If connector groups exist:** List them and ask, "Do you want to import the connector under one of these connector groups, or should I create a new one?"
-    * **If no connector groups exist:** Inform the user and ask for confirmation to create a new connector group.
-3.  **Manage Authentication:**
-    * **Authentication Discovery:** You are responsible for determining the correct authentication type for the user's platform. The available types are \`oauth\`, \`basic\`, \`apiKey\`, \`bearerToken\`, and \`customInput\`. **You must not ask the user for the authentication type.** Instead, use your internal knowledge and the \`search_on_internet\` tool to find the platform's API authentication documentation (e.g., "[PLATFORM] API authentication" or "[PLATFORM] API getting started").
-    * **CRITICAL - Auth Object Generation:** Based on your findings, you **MUST** generate the complete \`auth\` object payload, which includes the \`type\` and the \`details\` object. **Passing an empty or incomplete \`auth\` object is a failure.** You must determine all required fields for the \`details\` object and construct it.
-    * **User Confirmation:** Once you have constructed the full \`auth\` object, you **MUST** present it to the user for confirmation before proceeding.
-    * **New Connector Group:** Once the user confirms the \`auth\` object, you can proceed with creating the connector group.
-    * **Get User Credentials:** For any authentication type, you must ask the user for the necessary credentials (e.g., \`clientId\` and \`secret\` for OAuth, username/password for Basic, API key for apiKey, etc.). If they don't want to share them, add placeholders to the configuration and inform the user that they will need to replace them later.
-    * **Existing Connector Group:** Ensure the new connector's authentication type matches the selected connector group's \`auth_type\`. If it doesn't, inform the user and ask if they want to create a new connector group instead.
+### OAuth Configuration Examples
+When creating OAuth configurations, use these exact structures:
 
-**Authentication Payloads:**
-Your goal is to create the complete authentication payload, which consists of a \`type\` and a \`details\` object. Below are the available types and examples of the required structure for the \`details\` object.
-
-1.  **\`oauth\`**: Used for platforms that support OAuth 2.0.
-2.  **\`basic\`**: Used for platforms that require Basic Authentication (username and password).
-3.  **\`apiKey\`**: Used for platforms that require an API key and value, often passed in headers.
-4.  **\`bearerToken\`**: Used for platforms that require a static Bearer token for authorization.
-5.  **\`customInput\`**: A flexible type for any non-OAuth authentication that requires a custom set of input fields, such as API keys, instance names, or other unique identifiers.
-
----
-
-Here are some platform-specific examples you should use as a reference. The JSON shown is the content for the **\`details\`** object.
-
-**OAuth Examples (\`type: "oauth"\`)**
+**OAuth Examples (`type: "oauth"`)**
 
 * **Gmail:**
-    \`\`\`json
+    ```json
     {
-      "baseUrl": "https://accounts.google.com/o/oauth2/auth",
-      "clientId": "",
-      "secret":"",
-      "params": {
-        "scope": "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send",
-        "response_type": "code",
-        "access_type": "offline",
-        "prompt": "consent"
-      },
-      "requiredAttributes": [],
-      "tenantId": "default",
-      "authorization": {
-        "oauthGrantType": "authCodeGrantWithGrantType",
-        "accessTokenUrl": "https://oauth2.googleapis.com/token",
-        "refreshTokenGrantType": "refreshTokenWithAccessType"
+      "type": "oauth",
+      "details": {
+        "baseUrl": "https://accounts.google.com/o/oauth2/auth",
+        "clientId": "",
+        "secret": "",
+        "params": {
+          "scope": "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send",
+          "response_type": "code",
+          "access_type": "offline",
+          "prompt": "consent"
+        },
+        "requiredAttributes": [],
+        "tenantId": "default",
+        "authorization": {
+          "oauthGrantType": "authCodeGrantWithGrantType",
+          "accessTokenUrl": "https://oauth2.googleapis.com/token",
+          "refreshTokenGrantType": "refreshTokenWithAccessType"
+        }
       }
     }
-    \`\`\`
+    ```
 * **Microsoft Teams:**
-    \`\`\`json
+    ```json
     {
-      "baseUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-      "clientId": "",
-      "secret":"",
-      "params": {
-        "scope": "Chat.ReadWrite Application.ReadWrite.All AppRoleAssignment.ReadWrite.All ExternalUserProfile.ReadWrite.All DelegatedPermissionGrant.ReadWrite.All Directory.ReadWrite.All User.Read.All openid offline_access Team.ReadBasic.All ChannelMessage.ReadWrite Channel.Create ChannelMessage.Send Team.ReadBasic.All TeamMember.ReadWrite.All ChannelMember.ReadWrite.All",
-        "response_type": "code",
-        "prompt": "login"
-      },
-      "requiredAttributes": [],
-      "tenantId": "default",
-      "response_type": "code",
-      "authorization": {
-        "oauthGrantType": "authCodeGrantWithGrantType",
-        "accessTokenUrl": "https://login.microsoftonline.com/organizations/oauth2/v2.0/token",
-        "refreshTokenGrantType": "refreshTokenWithGrantType"
+      "type": "oauth",
+      "details": {
+        "baseUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        "clientId": "",
+        "secret": "",
+        "params": {
+          "scope": "Chat.ReadWrite Application.ReadWrite.All AppRoleAssignment.ReadWrite.All ExternalUserProfile.ReadWrite.All DelegatedPermissionGrant.ReadWrite.All Directory.ReadWrite.All User.Read.All openid offline_access Team.ReadBasic.All ChannelMessage.ReadWrite Channel.Create ChannelMessage.Send Team.ReadBasic.All TeamMember.ReadWrite.All ChannelMember.ReadWrite.All",
+          "response_type": "code",
+          "prompt": "login"
+        },
+        "requiredAttributes": [],
+        "tenantId": "default",
+        "authorization": {
+          "oauthGrantType": "authCodeGrantWithGrantType",
+          "accessTokenUrl": "https://login.microsoftonline.com/organizations/oauth2/v2.0/token",
+          "refreshTokenGrantType": "refreshTokenWithGrantType"
+        }
       }
     }
-    \`\`\`
+    ```
 
-**Basic Auth Example (\`type: "basic"\`)**
-\`\`\`json
+**Basic Auth Example (`type: "basic"`)**
+```json
 {
-  "username": {
-    "description": "Username",
-    "required": true
-  },
-  "password": {
-    "description": "Password",
-    "required": true
+  "type": "basic",
+  "details": {
+    "userName": {
+      "description": "Username",
+      "required": true
+    },
+    "password": {
+      "description": "Password",
+      "required": true,
+      "type": "password"
+    }
   }
 }
-\`\`\`
+```
 
-**API Key Example (\`type: "apiKey"\`)**
-\`\`\`json
+**API Key Example (`type: "apiKey"`)**
+```json
 {
-  "key": {
-    "description": "Key",
-    "defaultValue": "key",
-    "required": true
-  },
-  "value": {
-    "description": "Value",
-    "required": true
+  "type": "apiKey",
+  "details": {
+    "apiKeyName": {
+      "description": "Key",
+      "defaultValue": "key",
+      "required": true
+    },
+    "apiKeyValue": {
+      "description": "Value",
+      "required": true,
+      "type": "password"
+    }
   }
 }
-\`\`\`
+```
 
-**Bearer Token Example (\`type: "bearerToken"\`)**
-\`\`\`json
+**Bearer Token Example (`type: "bearerToken"`)**
+```json
 {
-  "access_token": {
-    "description": "Token",
-    "required": true,
-    "type": "password"
-  },
-  "expires_in": {
-    "type": "number",
-    "default": 100000,
-    "hidden": true,
-    "disabled": true
+  "type": "bearerToken",
+  "details": {
+    "expires_in": {
+      "type": "number",
+      "hidden": true,
+      "default": 100000,
+      "disabled": true
+    },
+    "access_token": {
+      "type": "password",
+      "required": true,
+      "description": "Token"
+    }
   }
 }
-\`\`\`
+```
 
-**Custom Input Examples (\`type: "customInput"\`)**
+**CRITICAL: All auth configurations must follow the "type" + "details" structure shown above. Key points:**
+- Bearer Token: Use "access_token" field (NOT "bearerToken") inside "details"
+- All auth types must have "type" at root level and configuration parameters in "details"
+- Password fields must have "type": "password"
+- Required fields must have "required": true
+
+**Custom Input Examples (`type: "customInput"`)**
 
 * **Linear:**
-    \`\`\`json
+    ```json
     {
-      "apiKey": {
-        "description": "API Key",
-        "type": "password"
-      },
-      "expires_in": {
-        "type": "number",
-        "default": 100000,
-        "hidden": true,
-        "disabled": true
+      "type": "customInput",
+      "details": {
+        "apiKey": {
+          "description": "API Key",
+          "type": "password",
+          "required": true
+        },
+        "expires_in": {
+          "type": "number",
+          "default": 100000,
+          "hidden": true,
+          "disabled": true
+        }
       }
     }
-    \`\`\`
+    ```
 * **ServiceNow:**
-    \`\`\`json
+    ```json
     {
-      "instanceName": {
-        "description": "Instance name"
-      },
-      "userName": {
-        "description": "Username"
-      },
-      "password": {
-        "description": "Password",
-        "type": "password"
-      },
-      "expires_in": {
-        "type": "number",
-        "default": 100000,
-        "hidden": true,
-        "disabled": true
+      "type": "customInput",
+      "details": {
+        "instanceName": {
+          "description": "Instance name",
+          "required": true
+        },
+        "userName": {
+          "description": "Username",
+          "required": true
+        },
+        "password": {
+          "description": "Password",
+          "type": "password",
+          "required": true
+        },
+        "expires_in": {
+          "type": "number",
+          "default": 100000,
+          "hidden": true,
+          "disabled": true
+        }
       }
     }
-    \`\`\`
-Your primary goal is to ensure every new connector is placed in a compatible connector group.
+    ```
 
-
-## STEP 4: Creating Connectors from Python Functions
+## Creating Connectors from Python Functions
 
 If a user wants to create a connector from a Python function, you must follow this workflow. The primary goal is to generate a valid Python function and a corresponding JSON schema for its inputs.
 
@@ -412,21 +330,11 @@ If a user wants to create a connector from a Python function, you must follow th
 3.  **Code Validity and Libraries:**
     * The generated Python code must be 100% valid and functional.
     * Rely on your existing knowledge to use libraries correctly.
-    * If you need to learn about a library, use the web search tool to find specific documentation or examples. You can set 'includeContent' to 'True' for a limited number of promising URLs. Use this only as a fallback.
 
-**Workflow:**
-
-1.  **Gather Requirements:** Ask the user to describe the connector's purpose (e.g., "I want to query a Redshift database"). Confirm the desired connector name and the specific input parameters required (e.g., host, database, user, password, query).
-2.  **Generate Schema and Code:** Based on the requirements, first generate the 'input_schema' in JSON format. Then, generate the 'python_code' for the 'fastn_function(params)'.
-3.  **Determine Connector Group:** Follow the process in STEP 3 to select an existing connector group or create a new one.
-4.  **Call the Tool:** With the 'name', 'python_code', 'input_schema', and 'connectorGroupId', call the 'create_connector_from_python_function' tool.
-
----
-**EXAMPLE 1: Redshift Connector**
----
+**Example: Redshift Connector**
 
 **Input Schema:**
-'''json
+```json
 {
   "type": "object",
   "properties": {
@@ -449,10 +357,10 @@ If a user wants to create a connector from a Python function, you must follow th
     }
   }
 }
-'''
+```
 
 **Python Code:**
-'''python
+```python
 import redshift_connector
 import json
 
@@ -461,479 +369,628 @@ def fastn_function(params):
     REDSHIFT_DB = params['auth']['db_name']
     REDSHIFT_USER = params['auth']['username']
     REDSHIFT_PASSWORD = params['auth']['password']
-    SQL_QUERY = params['body']['query']
+    QUERY = params['body']['query']
+    
+    conn = redshift_connector.connect(
+        host=REDSHIFT_HOST,
+        database=REDSHIFT_DB,
+        user=REDSHIFT_USER,
+        password=REDSHIFT_PASSWORD
+    )
+    
+    cursor = conn.cursor()
+    cursor.execute(QUERY)
+    result = cursor.fetchall()
+    
+    cursor.close()
+    conn.close()
+    
+    return {"result": result}
+```
 
-    try:
-        conn = redshift_connector.connect(
-            host=REDSHIFT_HOST,
-            database=REDSHIFT_DB,
-            user=REDSHIFT_USER,
-            password=REDSHIFT_PASSWORD
-        )
-
-        cursor = conn.cursor()
-        cursor.execute(SQL_QUERY)
-
-        if cursor.description:  # Query returns rows
-            columns = [col[0] for col in cursor.description]
-            rows = cursor.fetchall()
-            data = [dict(zip(columns, row)) for row in rows]
-            return {"status": "success", "data": data}
-        else:  # No data returned (e.g., CREATE, INSERT)
-            conn.commit()
-            return {"status": "success", "message": "Query executed successfully (no data returned)"}
-
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-    finally:
-        if 'cursor' in locals():
-            cursor.close()
-        if 'conn' in locals() and conn:
-            conn.close()
-'''
-
-## User-Specific Platform Instructions
-
-When a user mentions a specific platform you don't have a pre-defined authentication example for, you must use your knowledge and search capabilities to create a custom experience.
-
-**Example: Creating a "Zoom" Connector**
-
-1.  **Initial Request:** User says, "I want to create a connector for Zoom."
-2.  **Step 1 (Search for Postman/Swagger):** You search for "Zoom Postman collection" or "Zoom OpenAPI json". If you find a valid raw JSON URL, you proceed with that flow.
-3.  **Step 2 (Search for cURL):** If no collection is found, you immediately search for "Zoom API cURL examples".
-4.  **Step 3 (Authentication):**
-    * While looking for cURL, or in a separate search, you investigate Zoom's authentication by searching "Zoom API authentication type".
-    * You discover it uses OAuth 2.0.
-    * You then search for "Zoom API OAuth 2.0 guide" to find the necessary parameters like 'authorizationUrl', 'tokenUrl', and required 'scopes'.
-    * You construct the 'auth' object for Zoom, similar to the other OAuth examples.
-5.  **Step 4 (User Interaction):**
-    * You present the discovered cURL commands to the user and ask them to name the ones they want to create.
-    * You present the constructed OAuth 'auth' object to the user and ask for confirmation before creating the connector group.
-
-By following this process, you can dynamically adapt to any platform the user wants to connect with.
-
-
-## Post-Creation Response Protocol
-
-After successfully creating a connector or a connector group, your confirmation message to the user MUST be brief and clean.
-
-- **DO NOT** include internal identifiers like 'connectorId', 'connectorGroupId', or any other UUIDs in your response.
-- **DO NOT** re-state the input schema or other technical details that the user has already implicitly approved.
-- Simply confirm that the action was successful, mentioning the name of the created resource.
-
-**Correct Response Example:**
-"The connector 'runRedshiftQuery' has been created successfully in the 'Redshift' connector group. You can now use it in your workflows."
-
-**Incorrect Response Example:**
-"Your Python-function connector 'runRedshiftQuery' has been created successfully! Connector details: • ID: 306PTPqqY0izEqrg97yTSklk7K9 • Group: Redshift (bb2492d1-3352-4f35-85ad-a89a8ff3d8e8)..."look
-
-
-
----
-## Critical Workflow Scenarios
-
-### Scenario 1: "Create a connector group for [platform]"
-**User says:** "Create a connector group for TrackStar"
-
-**CORRECT Workflow:**
-1. Search for "[Platform] API authentication" to determine auth type
-2. Construct complete auth object based on findings
-3. Get user confirmation and create the connector group
-4. Search for Postman/Swagger collections
-5. If found → Import it
-6. If not found → Search for cURL examples
-7. If still nothing → Use your knowledge to create valid endpoints
-8. Last resort → Ask user for cURL/documentation
-
-**Key:** Create the group FIRST (with proper auth), then populate it with connectors.
-
-### Scenario 2: Platform mentioned without "group"
-**User says:** "I need Slack integration"
-
-**CORRECT Workflow:**
-1. Check existing groups with \`get_connector_groups()\`
-2. If no compatible group exists → Follow Scenario 1
-3. If compatible group exists → Search for Postman/Swagger → Import or create from cURL
-
-### Scenario 3: Authentication handling
-**NEVER:**
-- Ask user "What auth type does this use?"
-- Pass empty auth: \`{"type": "oauth", "details": {}}\`
-
-**ALWAYS:**
-1. Use your knowledge first (you know Gmail, Slack, Salesforce use OAuth)
-2. If unknown → Search "[Platform] API authentication type"
-3. Construct COMPLETE auth object
-4. Present to user for confirmation only
-
-### Scenario 4: Resource discovery
-**Priority order:**
-1. Search for Postman/Swagger (2 attempts max)
-2. Search for cURL examples
-3. Use your own API knowledge to create valid endpoints
-4. Ask user only as last resort
-
-**Remember:** You have extensive API knowledge - use it before asking the user.
-
-### Scenario 5: Two-tool limit
-**After 2 sequential tool calls → STOP and respond to user**
-
-Example: Creating 5 endpoints from cURL:
-- Call 1: Create endpoint A
-- Call 2: Create endpoint B
-- STOP → "Created first 2 endpoints. Continuing..."
-- Call 3: Create endpoint C
-- Call 4: Create endpoint D
-- STOP → "Created 2 more. Creating the last one..."
-
-### Key Principles:
-1. **Search for auth first** when creating new groups
-2. **Use your knowledge** - don't ask questions you can answer
-3. **Be autonomous** - only ask user when truly stuck
-4. **Complete auth objects** - never pass empty configurations
-5. **Respect tool limits** - max 2 calls before responding
-
+Always make sure that every parameter accessed in the code (like `params['auth']['host']`) is properly defined in the `input_schema`.
 """
 
+class DataPersistence:
+    def __init__(self, platform_name: str):
+        self.platform_name = platform_name.lower()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.data_dir = f"scraped_data/{self.platform_name}_{timestamp}"
+        os.makedirs(self.data_dir, exist_ok=True)
+        logger.info(f"📁 Created data directory: {self.data_dir}")
+    
+    def save_raw_data(self, data: Dict, filename: str = "raw_scraped_data.json"):
+        filepath = os.path.join(self.data_dir, filename)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        logger.info(f"💾 Saved raw data to: {filepath}")
+    
+    def save_endpoints(self, endpoints: List[Dict], filename: str = "extracted_endpoints.json"):
+        filepath = os.path.join(self.data_dir, filename)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(endpoints, f, indent=2, ensure_ascii=False)
+        logger.info(f"🔗 Saved extracted endpoints to: {filepath}")
+    
+    def save_results(self, results: Dict, filename: str = "final_results.json"):
+        filepath = os.path.join(self.data_dir, filename)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+        logger.info(f"🎯 Saved final results to: {filepath}")
+
+class UniversalWebScraper:
+    def __init__(self, data_persistence: DataPersistence):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        })
+        self.data_persistence = data_persistence
+        logger.info("🌐 UniversalWebScraper initialized")
+    
+    def scrape_comprehensive(self, base_url: str, max_pages: int = 50) -> Dict:
+        """Universal scraping for any API documentation format"""
+        logger.info(f"🌐 Starting universal scraping of: {base_url}")
+        
+        parsed_url = urllib.parse.urlparse(base_url)
+        base_domain = parsed_url.netloc
+        
+        urls_to_visit = {base_url}
+        visited_urls = set()
+        scraped_pages = {}
+        page_count = 0
+        
+        while urls_to_visit and page_count < max_pages:
+            current_url = urls_to_visit.pop()
+            
+            if current_url in visited_urls:
+                continue
+            
+            try:
+                page_count += 1
+                logger.info(f"📄 Scraping page {page_count}/{max_pages}: {current_url}")
+                
+                response = self.session.get(current_url, timeout=30)
+                response.raise_for_status()
+                
+                soup = BeautifulSoup(response.content, 'html.parser')
+                
+                # Remove scripts and styles
+                for script in soup(["script", "style"]):
+                    script.decompose()
+                
+                # Universal content extraction
+                page_data = {
+                    'url': current_url,
+                    'title': soup.title.string if soup.title else '',
+                    'headings': [],
+                    'code_blocks': [],
+                    'text_content': soup.get_text(),
+                    'links': []
+                }
+                
+                # Extract headings
+                for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                    page_data['headings'].append({
+                        'level': int(heading.name[1]),
+                        'text': heading.get_text().strip()
+                    })
+                
+                # Extract all code blocks
+                for code in soup.find_all(['code', 'pre']):
+                    code_text = code.get_text().strip()
+                    if code_text and len(code_text) > 5:
+                        page_data['code_blocks'].append(code_text)
+                
+                # Add internal links for crawling
+                for link in soup.find_all('a', href=True):
+                    href = link['href']
+                    full_url = urllib.parse.urljoin(current_url, href)
+                    parsed_url = urllib.parse.urlparse(full_url)
+                    
+                    if (parsed_url.netloc == base_domain and 
+                        full_url not in visited_urls and 
+                        not full_url.endswith(('.pdf', '.zip', '.tar.gz', '.jpg', '.png', '.gif'))):
+                        urls_to_visit.add(full_url)
+                        page_data['links'].append(full_url)
+                
+                scraped_pages[current_url] = page_data
+                visited_urls.add(current_url)
+                
+                logger.info(f"✅ Scraped: {page_data['title'][:30]}... ({len(page_data['code_blocks'])} code blocks)")
+                
+                time.sleep(0.3)
+                
+            except Exception as e:
+                logger.error(f"❌ Error scraping {current_url}: {str(e)}")
+                continue
+        
+        raw_data = {
+            'base_url': base_url,
+            'scrape_timestamp': datetime.now().isoformat(),
+            'total_pages_scraped': len(scraped_pages),
+            'pages': scraped_pages
+        }
+        
+        self.data_persistence.save_raw_data(raw_data)
+        logger.info(f"✅ Universal scraping completed: {len(scraped_pages)} pages")
+        
+        return raw_data
+    
+    def extract_endpoints_with_ai(self, raw_data: Dict, client) -> List[Dict]:
+        """AI-powered endpoint extraction - page by page processing with gpt-4.1-mini"""
+        logger.info("🤖 Using AI to extract endpoints from raw page data...")
+        
+        all_endpoints = []
+        
+        for url, page_data in raw_data['pages'].items():
+            logger.info(f"🔍 AI processing page: {page_data.get('title', url)[:50]}...")
+            
+            # Filter and optimize page content for LLM
+            filtered_content = self._filter_page_content_for_ai(page_data)
+            
+            if not filtered_content.strip():
+                logger.info("⏭️ Skipping page - no relevant content")
+                continue
+            
+            # Extract cURLs from this page using AI
+            page_curls = self._extract_curls_from_page_with_ai(filtered_content, url, client)
+            
+            # Add all cURLs (no deduplication needed - let main AI handle)
+            for curl_item in page_curls:
+                if curl_item and curl_item.get('curl'):
+                    all_endpoints.append(curl_item)
+                    logger.info(f"✅ AI extracted cURL: {curl_item['name']}")
+        
+        self.data_persistence.save_endpoints(all_endpoints)
+        logger.info(f"🎯 AI extraction completed: {len(all_endpoints)} endpoints found")
+        
+        return all_endpoints
+    
+    def _filter_page_content_for_ai(self, page_data: Dict) -> str:
+        """Send raw page data to AI - let AI decide what's relevant"""
+        title = page_data.get('title', '')
+        text_content = page_data.get('text_content', '')
+        code_blocks = page_data.get('code_blocks', [])
+        
+        # Skip obvious non-API pages
+        skip_keywords = ['privacy', 'terms', 'about', 'contact']
+        if any(keyword in title.lower() for keyword in skip_keywords):
+            return ""
+        
+        # Build raw content for AI
+        raw_content = f"Title: {title}\n\n"
+        
+        # Add all code blocks (most likely place for cURL commands)
+        if code_blocks:
+            raw_content += "Code Blocks:\n"
+            for i, code in enumerate(code_blocks):
+                raw_content += f"```\n{code}\n```\n\n"
+        
+        # Add page text content
+        raw_content += f"Page Content:\n{text_content}\n"
+        
+        return raw_content
+    
+    def _extract_curls_from_page_with_ai(self, page_content: str, page_url: str, client) -> List[Dict]:
+        """Use gpt-4.1-mini to extract cURL commands + names from raw page data"""
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[
+                    {"role": "system", "content": """Extract cURL commands from API documentation and give them meaningful names.
+
+Find all valid, complete cURL commands and assign descriptive names.
+
+OUTPUT FORMAT (JSON):
+[
+  {
+    "name": "createChatCompletion",
+    "curl": "curl -X POST \"https://api.openai.com/v1/chat/completions\" -H \"Content-Type: application/json\" -H \"Authorization: Bearer $OPENAI_API_KEY\" -d '{\"model\": \"gpt-4\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello!\"}]}'"
+  },
+  {
+    "name": "listModels", 
+    "curl": "curl -X GET \"https://api.openai.com/v1/models\" -H \"Authorization: Bearer $OPENAI_API_KEY\""
+  }
+]
+
+Return [] if no valid cURL commands found."""},
+                    {"role": "user", "content": f"Extract cURL commands from this page:\n\n{page_content}"}
+                ],
+                temperature=0.1,
+                max_tokens=2000
+            )
+            
+            result_text = response.choices[0].message.content.strip()
+            
+            # Parse JSON response from AI
+            try:
+                if '```json' in result_text:
+                    result_text = result_text.split('```json')[1].split('```')[0].strip()
+                elif '```' in result_text:
+                    result_text = result_text.split('```')[1].split('```')[0].strip()
+                
+                curl_data = json.loads(result_text)
+                
+                # Add source page to each item
+                for item in curl_data:
+                    item['source_page'] = page_url
+                
+                return curl_data
+                
+            except json.JSONDecodeError:
+                logger.warning(f"⚠️ AI returned invalid JSON for {page_url}")
+                return []
+        
+        except Exception as e:
+            logger.error(f"❌ AI extraction error for {page_url}: {str(e)}")
+            return []
+
 def generate_auth_token():
-    url = 'https://qa.fastn.ai/auth/realms/fastn/protocol/openid-connect/token'
+    """Generate Fastn auth token"""
+    logger.info("🔑 Generating Fastn auth token...")
+    
+    fastn_env = os.getenv("FASTN_ENV", "qa.fastn.ai")
+    url = f'https://{fastn_env}/auth/realms/fastn/protocol/openid-connect/token'
     headers = {
         'realm': 'fastn',
         'Content-Type': 'application/x-www-form-urlencoded'
     }
+    
     data = {
         'grant_type': 'password',
-        'username': 'umar.farooq@fastn.ai',
-        'password': 'automation',
-        'client_id': 'fastn-app',
-        'redirect_uri': 'https://google.com',
+        'username': os.getenv("FASTN_USERNAME"),
+        'password': os.getenv("FASTN_PASSWORD"),
+        'client_id': os.getenv("FASTN_CLIENT_ID", "fastn-app"),
+        'redirect_uri': os.getenv("FASTN_REDIRECT_URI", "https://google.com"),
         'scope': 'openid'
     }
-    encoded_data = urllib.parse.urlencode(data)
-    response = requests.post(url, headers=headers, data=encoded_data)
-    if response.status_code == 200:
-        return response.json().get('access_token')
-    else:
-        # Handle error appropriately
+    
+    try:
+        response = requests.post(url, headers=headers, data=data)
+        response.raise_for_status()
+        
+        token_data = response.json()
+        access_token = token_data.get('access_token')
+        
+        if access_token:
+            logger.info("✅ Fastn auth token generated successfully")
+            return access_token
+        else:
+            logger.error("❌ No access token in response")
+            return None
+            
+    except Exception as e:
+        logger.error(f"❌ Failed to generate Fastn auth token: {str(e)}")
         return None
 
-def fastn_function(messages):
-    env = os.getenv("ENV")
-    clientId = os.getenv("FASTN_SPACE_ID")
-    debug_info = {
-        "steps": [],
-        "timestamp": time.time(),
-        "search_results": [],
-        "function_calls": [],
-        "errors": []
+def call_fastn_api(function_name: str, function_args: Dict) -> Dict:
+    """Call Fastn API with logging"""
+    logger.info(f"🔧 Calling Fastn API: {function_name}")
+    
+    fastn_auth_token = generate_auth_token()
+    if not fastn_auth_token:
+        return {"error": "Failed to generate Fastn auth token"}
+    
+    env = os.getenv("FASTN_ENV", "qa.fastn.ai")
+    client_id = os.getenv("FASTN_CLIENT_SPACE_ID", "b034812a-7d77-4e8e-945e-106656b2676e")
+    url = f"https://{env}/api/v1/connectorCreationHelper"
+    
+    headers = {
+        "Content-Type": "application/json",
+        "x-fastn-space-id": client_id,
+        "x-fastn-space-tenantid": "",
+        "stage": "LIVE",
+        "x-fastn-custom-auth": "true",
+        "authorization": fastn_auth_token
     }
-
-    def add_debug(step, data):
-        debug_info["steps"].append({
-            "step": step,
-            "timestamp": time.time(),
-            "data": data
-        })
-
-    try:
-        add_debug("initialization", "Starting connector agent")
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        add_debug("openai_client", "OpenAI client initialized successfully")
-        tools = [
-        {
-          "type": "function",
-          "function": {
-            "name": "search_on_internet",
-            "description": "This function performs a web search to find resources online. It can optionally include the full content of the search results.",
-            "parameters": {
-              "type": "object",
-              "properties": {
-                "prompt": {
-                  "type": "string",
-                  "description": "A detailed search prompt for what to search on the web."
-                },
-                "includeContent": {
-                  "type": "boolean",
-                  "description": "Set to true to include the full content of the search results. Defaults to false.",
-                  "default": false
-                }
-              },
-              "required": ["prompt"]
-            }
-          }
-        },
-        {
-          "type": "function",
-          "function": {
-            "name": "create_connector_from_python_function",
-            "description": "Creates a fully functional connector from a Python script and a corresponding JSON input schema. Use this to define custom logic, perform complex data transformations, or interact with APIs that require more than a simple cURL command. Both the Python code and the input schema are mandatory and must be provided.",
-            "parameters": {
-              "type": "object",
-              "properties": {
-                "name": {
-                  "type": "string",
-                  "description": "A descriptive, user-friendly name for the new connector endpoint (e.g., 'runRedshiftQuery', 'fetchUserData')."
-                },
-                "python_code": {
-                  "type": "string",
-                  "description": "A self-contained Python script defining a single function: 'fastn_function(params)'. This function must handle all necessary imports and logic. It receives a 'params' dictionary (validated by the 'input_schema') and should return a dictionary as its result."
-                },
-                "input_schema": {
-                  "type": "object",
-                  "description": "A complete JSON Schema object that strictly defines the structure and data types of the 'params' dictionary passed to the 'fastn_function'. It must include definitions for all expected 'auth' and 'body' parameters."
-                },
-                "connectorGroupId": {
-                  "type": "string",
-                  "description": "The unique identifier of the connector group under which this new connector will be created."
-                }
-              },
-              "required": ["name", "python_code", "input_schema", "connectorGroupId"]
-            }
-          }
-        },
-        {
-          "type": "function",
-          "function": {
-            "name": "get_connector_groups",
-            "description": "Fetches a list of all available connector groups in the user's workspace. Returns each group's name, ID, and authentication type.",
-            "parameters": {
-              "type": "object",
-              "properties": {},
-              "required": []
-            }
-          }
-        },
-        {
-          "type": "function",
-          "function": {
-            "name": "create_connector_endpoint_under_group",
-            "description": "This function creates a connector endpoint using CURL commands. Curl Command Should be Valid should include required params headers , body. Verify it before calling this function.",
-            "parameters": {
-              "type": "object",
-              "properties": {
-                "name": { "type": "string", "description": "The name of the connector endpoint" },
-                "curl": { "type": "string", "description": "The CURL command representing the connector's endpoint.Curl Command SHould be Valid should include required params headers , body. Verify it before calling this function. And Make sure varaiables are mapped correctly with <<name.prefix>>" },
-                "connectorGroupId": { "type": "string", "description": "The ID of the connector group to add the connector to" }
-              },
-              "required": ["name", "curl", "connectorGroupId"]
-            }
-          }
-        },
-        {
-          "type": "function",
-          "function": {
-            "name": "create_connector_group",
-            "description": "Creates a new connector group with a specified authentication type.",
-            "parameters": {
-              "type": "object",
-              "properties": {
-                "name": {
-                  "type": "string",
-                  "description": "The name for the new connector group."
-                },
-                "auth": {
-                  "type": "object",
-                  "description": "The authentication configuration for the group. The structure depends on the 'type' of authentication.",
-                  "properties": {
-                    "type": {
-                      "type": "string",
-                      "description": "The type of authentication.",
-                      "enum": ["oauth", "customInput", "none"]
-                    },
-                    "details": {
-                      "type": "object",
-                      "description": "A JSON object containing the specific credentials or configuration for the chosen auth type. For 'oauth', this would include 'baseUrl', 'clientId', etc. For 'customInput', it would be the specific fields required by the platform."
-                    }
-                  },
-                  "required": ["type", "details"]
-                }
-              },
-              "required": ["name", "auth"]
-            }
-          }
-        },
-        {
-          "type": "function",
-          "function": {
-            "name": "download_postman_json_file_and_import_under_connector_group",
-            "description": "Downloads and imports a Postman JSON file from a URL",
-            "parameters": {
-              "type": "object",
-              "properties": {
-                "url": { "type": "string", "description": "Valid URL of JSON postman collection file (must end with .json) ot postman cloud url if public if not public then user should include his api key in url" },
-                "connectorGroupId": { "type": "string", "description": "The ID of the connector group to use" },
-                "collectionType": { "type": "string", "description": "Collection type : POSTMAN or SWAGGER", "enum": ["POSTMAN", "SWAGGER"] }
-              },
-              "required": ["url", "connectorGroupId", "collectionType"]
-            }
-          }
+    
+    payload = {
+        "input": {
+            "env": env,
+            "clientId": client_id,
+            "function": function_name,
+            "arguments": function_args
         }
-      ]
-        token = os.getenv("WEBSEARCH_TOKEN")
-        fastn_space_id = os.getenv("FASTN_SPACE_ID")
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code == 200:
+            result = response.json()
+            logger.info(f"✅ Fastn API success: {function_name}")
+            return result
+        else:
+            error_msg = f"Fastn API error: {response.status_code} - {response.text}"
+            logger.error(f"❌ {error_msg}")
+            return {"error": error_msg}
+    except Exception as e:
+        error_msg = f"Fastn API call failed: {str(e)}"
+        logger.error(f"❌ {error_msg}")
+        return {"error": error_msg}
 
-        def perform_web_search(prompt, includeContent=False):
-            add_debug("search_initiated", {"query": prompt, "includeContent": includeContent, "api_endpoint": "https://api.websearchapi.ai/ai-search"})
-            url = "https://api.websearchapi.ai/ai-search"
-            headers = {"Content-Type": "application/json", "Authorization": token}
-            
-            max_results = 2 if includeContent else 5
-            
-            payload = {"query": prompt, "maxResults": max_results, "includeContent": includeContent, "country": "us", "language": "en"}
-            
-            add_debug("search_payload", payload)
-            try:
-                response = requests.post(url, headers=headers, json=payload)
-                add_debug("search_api_response", {"status_code": response.status_code, "response_size": len(response.text)})
-                if response.status_code == 200:
-                    search_data = response.json()
-                    add_debug("search_results_received", {"total_results": len(search_data.get("organic", []))})
-                    debug_info["search_results"].append(search_data)
-                    return search_data
-                else:
-                    error_data = {"status_code": response.status_code, "error_text": response.text}
-                    add_debug("search_api_error", error_data)
-                    debug_info["errors"].append(error_data)
-                    return {"error": f"Search API error: {response.status_code}"}
-            except Exception as e:
-                error_data = {"exception": str(e), "type": "search_request_failed"}
-                add_debug("search_exception", error_data)
-                debug_info["errors"].append(error_data)
-                return {"error": f"Search failed: {str(e)}"}
+def autonomous_universal_agent(url: str, platform_name: str, description: str = "", connector_group_id: str = None) -> Dict:
+    """Universal autonomous agent with original system prompt"""
+    
+    logger.info("🤖 STARTING AUTONOMOUS UNIVERSAL AGENT")
+    logger.info("=" * 60)
+    logger.info(f"🎯 Platform: {platform_name}")
+    logger.info(f"🔗 URL: {url}")
+    logger.info(f"📄 Description: {description}")
+    logger.info("=" * 60)
+    
+    # Initialize components
+    data_persistence = DataPersistence(platform_name)
+    scraper = UniversalWebScraper(data_persistence)
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    
+    try:
+        # STEP 1: Universal Scraping
+        logger.info("\n" + "="*60)
+        logger.info("🌐 STEP 1: UNIVERSAL WEB SCRAPING")
+        logger.info("="*60)
+        
+        raw_data = scraper.scrape_comprehensive(url)
+        
+        # STEP 2: AI-Powered Endpoint Extraction  
+        logger.info("\n" + "="*60)
+        logger.info("🤖 STEP 2: AI-POWERED ENDPOINT EXTRACTION")
+        logger.info("="*60)
+        
+        extracted_endpoints = scraper.extract_endpoints_with_ai(raw_data, client)
+        
+        # STEP 3: Autonomous AI Processing with Original System Prompt
+        logger.info("\n" + "="*60)
+        logger.info("🤖 STEP 3: AUTONOMOUS AI PROCESSING")
+        logger.info("="*60)
+        
+        messages = [
+            {"role": "system", "content": ORIGINAL_SYSTEM_PROMPT},
+            {"role": "user", "content": f"""
+AUTONOMOUS MISSION: Create complete connector integration for {platform_name}
 
-        def call_fastn_api(function_name, function_args):
-            add_debug("fastn_api_call_initiated", {"function_name": function_name, "arguments": function_args})
-            
-            fastn_auth_token = generate_auth_token()
-            if not fastn_auth_token:
-                return {"error": "Failed to generate authentication token."}
+EXTRACTED DATA:
+- Pages Scraped: {raw_data.get('total_pages_scraped', 0)}
+- Endpoints Found: {len(extracted_endpoints)}
+- Platform Description: {description}
+- Existing Group ID: {connector_group_id or 'None - create new'}
 
-            url = f"""https://{env}/api/v1/connectorCreationHelper"""
-            headers = {
-                "Content-Type": "application/json",
-                "x-fastn-space-id": fastn_space_id,
-                "x-fastn-space-tenantid": "",
-                "stage": "DRAFT",
-                "x-fastn-custom-auth": "true",
-                "authorization": fastn_auth_token
-            }
-            
-            payload = {
-                "input": {
-                    "clientId": clientId,
-                    "env": env,
-                    "arguments": function_args,
-                    "function": function_name,
-                    "data": {}
+EXTRACTED CURLS:
+{json.dumps(extracted_endpoints, indent=2)}
+
+These are raw cURL commands extracted from the documentation. Use them directly to create connectors.
+
+CRITICAL RULES:
+1. **NO DUPLICATES**: Track what you create. Do NOT create duplicate endpoints with same functionality
+2. **USE EXISTING GROUP**: If connector_group_id is provided, use it. Do NOT create new groups
+3. **UNIQUE NAMES**: Each endpoint must have a unique name within the group
+4. **VARIABLE MAPPING**: 
+   - Base URL: ONLY map as <<url.baseUrl>> if it varies per user (Shopify stores, custom domains)
+     * DeepSeek: Keep "https://api.deepseek.com" static (same for all users)
+     * Shopify: Use "https://<<url.storeName>>.myshopify.com" (varies per user)  
+   - Path parameters: Map as <<url.paramName>> ONLY for dynamic IDs/values
+     * Static paths like "/chat/completions" stay as-is
+     * Dynamic paths like "/products/{id}" become "/products/<<url.productId>>"
+
+Execute the complete workflow autonomously:
+1. If connector_group_id provided: USE IT, do NOT create new group
+2. If no connector_group_id: Create new group with auth config
+3. Create UNIQUE endpoints (avoid duplicates with same URL/functionality)
+4. Track created endpoints to prevent duplicates
+5. Complete without asking confirmation
+"""}
+        ]
+        
+        tools = [
+            {
+                "type": "function", 
+                "function": {
+                    "name": "get_connector_groups",
+                    "description": "Get existing connector groups",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "create_connector_group", 
+                    "description": "Create connector group with auth config",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "auth": {
+                                "type": "object",
+                                "properties": {
+                                    "type": {"type": "string", "enum": ["oauth", "customInput", "basic", "apiKey", "bearerToken"]},
+                                    "details": {"type": "object"}
+                                }
+                            }
+                        },
+                        "required": ["name", "auth"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "create_connector_endpoint_under_group",
+                    "description": "Create connector endpoint from cURL",
+                    "parameters": {
+                        "type": "object", 
+                        "properties": {
+                            "name": {"type": "string"},
+                            "curl": {"type": "string"},
+                            "connectorGroupId": {"type": "string"}
+                        },
+                        "required": ["name", "curl", "connectorGroupId"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "create_connector_from_python_function",
+                    "description": "Create connector from Python function",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "python_code": {"type": "string"},
+                            "input_schema": {"type": "object"},
+                            "connectorGroupId": {"type": "string"}
+                        },
+                        "required": ["name", "python_code", "input_schema", "connectorGroupId"]
+                    }
                 }
             }
-            
-            add_debug("fastn_api_payload", payload)
-            
-            try:
-                response = requests.post(url, headers=headers, json=payload)
-                add_debug("fastn_api_response", {"status_code": response.status_code, "response_size": len(response.text)})
-                
-                if response.status_code == 200:
-                    api_result = response.json()
-                    add_debug("fastn_api_success", {"result_keys": list(api_result.keys()) if isinstance(api_result, dict) else "non_dict_response"})
-                    return api_result
-                else:
-                    error_data = {"status_code": response.status_code, "error_text": response.text}
-                    add_debug("fastn_api_error", error_data)
-                    debug_info["errors"].append(error_data)
-                    return {"error": f"Fastn API error: {response.status_code} - {response.text}"}
-            except Exception as e:
-                error_data = {"exception": str(e), "type": "fastn_api_request_failed"}
-                add_debug("fastn_api_exception", error_data)
-                debug_info["errors"].append(error_data)
-                return {"error": f"Fastn API call failed: {str(e)}"}
-
-        max_iterations = 3
+        ]
+        
+        # Execute autonomous workflow with context tracking
+        created_endpoints = []
+        connector_group_created = None
+        created_endpoint_names = set()  # Track created endpoint names to prevent duplicates
+        
+        max_iterations = 20
         iteration = 0
+        
         while iteration < max_iterations:
             iteration += 1
-            add_debug(f"openai_request_iteration_{iteration}", {"model": "gpt-4.1-mini", "message_count": len(messages), "tools_count": len(tools)})
+            logger.info(f"🤖 AI Iteration {iteration}/{max_iterations}")
             
-            response = client.chat.completions.create(
-                # model="gpt-4.1-mini",
-                model="o4-mini",
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-                # temperature=0.1
-            )
-            
-            message = response.choices[0].message
-            messages.append(message.model_dump())
-
-            if message.tool_calls:
-                add_debug("tool_calls_detected", {"tool_call_count": len(message.tool_calls), "functions": [call.function.name for call in message.tool_calls]})
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-4.1-mini",
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    temperature=0.1
+                )
                 
-                for tool_call in message.tool_calls:
-                    function_name = tool_call.function.name
-                    function_args = json.loads(tool_call.function.arguments)
-                    
-                    add_debug("processing_function_call", {"function_name": function_name, "arguments": function_args, "tool_call_id": tool_call.id})
-                    
-                    if function_name == "search_on_internet":
-                        search_prompt = function_args.get("prompt")
-                        include_content = function_args.get("includeContent", False)
-                        search_results = perform_web_search(search_prompt, include_content)
-                        messages.append({"role": "tool", "tool_call_id": tool_call.id, "name": function_name, "content": json.dumps(search_results)})
-                        add_debug("search_results_added_to_conversation", {"search_success": "error" not in search_results})
-                    else:
-                        add_debug("calling_fastn_api_for_function", {"function": function_name})
-                        fastn_result = call_fastn_api(function_name, function_args)
-                        messages.append({"role": "tool", "tool_call_id": tool_call.id, "name": function_name, "content": json.dumps(fastn_result)})
-                        debug_info["function_calls"].append({"function": function_name, "arguments": function_args, "result": fastn_result})
-            else:
-                add_debug("direct_response_no_function_calls", {"response_length": len(message.content or "")})
-                return {"response": message.content, "messages": messages, "debug": debug_info}
+                message = response.choices[0].message
+                # Convert message to dict format for messages array
+                message_dict = {
+                    "role": "assistant",
+                    "content": message.content
+                }
+                if message.tool_calls:
+                    message_dict["tool_calls"] = [
+                        {
+                            "id": tool_call.id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_call.function.name,
+                                "arguments": tool_call.function.arguments
+                            }
+                        } for tool_call in message.tool_calls
+                    ]
+                messages.append(message_dict)
+                
+                if message.tool_calls:
+                    for tool_call in message.tool_calls:
+                        function_name = tool_call.function.name
+                        function_args = json.loads(tool_call.function.arguments)
+                        
+                        logger.info(f"🔧 Executing: {function_name}")
+                        
+                        result = call_fastn_api(function_name, function_args)
+                        
+                        # Track progress
+                        if function_name == "create_connector_group" and "error" not in result:
+                            connector_group_created = result.get("connectorGroupId") or result.get("id")
+                            logger.info(f"✅ Connector group created: {connector_group_created}")
+                            
+                        elif function_name == "create_connector_endpoint_under_group" and "error" not in result:
+                            endpoint_name = function_args.get("name")
+                            created_endpoint_names.add(endpoint_name)  # Track for duplicate prevention
+                            created_endpoints.append({
+                                "name": endpoint_name,
+                                "curl": function_args.get("curl"),
+                                "result": result
+                            })
+                            logger.info(f"✅ Endpoint created ({len(created_endpoints)}): {endpoint_name}")
+                            
+                            # Add context message to prevent future duplicates
+                            messages.append({
+                                "role": "system", 
+                                "content": f"CONTEXT UPDATE: You have created endpoint '{endpoint_name}'. Do NOT create another endpoint with the same name or functionality."
+                            })
+                        
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": function_name,
+                            "content": json.dumps(result)
+                        })
+                else:
+                    logger.info(f"🎯 AI completed: {message.content}")
+                    break
+            
+            except Exception as e:
+                logger.error(f"❌ AI error in iteration {iteration}: {str(e)}")
+                break
         
-        return {"response": "I seem to be stuck in a loop. Could you please clarify your request?", "messages": messages, "debug": debug_info}
-
+        # Final results
+        final_results = {
+            "platform_name": platform_name,
+            "url": url,
+            "description": description,
+            "scraping_summary": {
+                "total_pages_scraped": raw_data.get('total_pages_scraped', 0),
+                "endpoints_extracted": len(extracted_endpoints)
+            },
+            "connector_group_id": connector_group_created or connector_group_id,
+            "created_endpoints": created_endpoints,
+            "execution_summary": {
+                "total_iterations": iteration,
+                "endpoints_created": len(created_endpoints),
+                "completion_timestamp": datetime.now().isoformat()
+            }
+        }
+        
+        data_persistence.save_results(final_results)
+        
+        logger.info("🎉 AUTONOMOUS UNIVERSAL AGENT COMPLETED!")
+        logger.info(f"📊 Pages: {raw_data.get('total_pages_scraped', 0)} | Endpoints: {len(extracted_endpoints)}")
+        
+        return final_results
+        
     except Exception as e:
-        error_data = {"exception": str(e), "type": "main_execution_error", "timestamp": time.time()}
-        add_debug("main_exception", error_data)
-        debug_info["errors"].append(error_data)
-        return {"response": f"I encountered an error: {str(e)}. Please try again.", "error": str(e), "messages": messages, "debug": debug_info}
+        error_msg = f"💥 Critical error: {str(e)}"
+        logger.error(error_msg)
+        return {"error": str(e)}
+
+def main():
+    """CLI for autonomous universal agent"""
+    import sys
+    
+    if len(sys.argv) < 3:
+        print("Usage: python app.py <url> <platform_name> [description] [connector_group_id]")
+        print("Example: python app.py https://docs.example.com/api MyAPI 'API Description' optional_group_id")
+        return
+    
+    url = sys.argv[1]
+    platform_name = sys.argv[2]
+    description = sys.argv[3] if len(sys.argv) > 3 else ""
+    connector_group_id = sys.argv[4] if len(sys.argv) > 4 else None
+    
+    result = autonomous_universal_agent(url, platform_name, description, connector_group_id)
+    
+    print("\n🎯 RESULTS:")
+    print("=" * 50)
+    if "error" in result:
+        print(f"❌ Error: {result['error']}")
+    else:
+        print(f"✅ Platform: {result.get('platform_name', 'Unknown')}")
+        print(f"📊 Pages: {result.get('scraping_summary', {}).get('total_pages_scraped', 0)}")
+        print(f"🔍 Extracted: {result.get('scraping_summary', {}).get('endpoints_extracted', 0)}")
+        print(f"🏗️ Created: {result.get('execution_summary', {}).get('endpoints_created', 0)}")
+        
+        created_endpoints = result.get('created_endpoints', [])
+        if created_endpoints:
+            print(f"\n📋 Created Endpoints:")
+            for i, endpoint in enumerate(created_endpoints, 1):
+                print(f"  {i}. ✅ {endpoint.get('name', 'Unknown')}")
+    
+    print("=" * 50)
 
 if __name__ == "__main__":
-    session_id = f"session_{int(time.time())}"
-    chat_history_file = os.path.join("chat_history", f"{session_id}.json")
-
-    def save_chat_history(messages):
-        with open(chat_history_file, "w") as f:
-            json.dump(messages, f, indent=2)
-
-    def load_chat_history():
-        if os.path.exists(chat_history_file):
-            with open(chat_history_file, "r") as f:
-                return json.load(f)
-        return []
-
-    messages = load_chat_history()
-    if not messages:
-        messages.append({"role": "system", "content": SYSTEM_PROMPT})
-
-    print(f"Welcome to the Fastn Connector Creation Agent (session: {session_id})")
-    print("Type 'exit' or 'quit' to stop.")
-    
-    while True:
-        user_input = input("You: ").strip()
-        if user_input.lower() in ("exit", "quit"):
-            print("Goodbye!")
-            break
-        
-        messages.append({"role": "user", "content": user_input})
-        
-        result = fastn_function(messages)
-        
-        messages = result.get("messages", messages)
-        response_text = result.get("response", "No response")
-
-        print("Agent:", response_text)
-        
-        save_chat_history(messages)
+    main()

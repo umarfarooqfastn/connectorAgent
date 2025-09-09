@@ -63,4 +63,4 @@ Thumbs.db
 *.temp
 
 # Application files
-app.py
+oldApp.py
