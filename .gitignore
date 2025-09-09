@@ -62,4 +62,5 @@ Thumbs.db
 *.tmp
 *.temp
 
+# Application files
 app.py

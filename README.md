@@ -22,9 +22,23 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-3. Create a `.env` file with your OpenAI API key:
+3. Copy the example environment file and configure your credentials:
+```bash
+cp .env.example .env
 ```
+
+4. Edit `.env` file with your actual credentials:
+```bash
+# OpenAI API Configuration
 OPENAI_API_KEY=your_openai_api_key_here
+
+# Fastn Configuration
+FASTN_ENV=qa.fastn.ai
+FASTN_USERNAME=your_fastn_username
+FASTN_PASSWORD=your_fastn_password
+FASTN_CLIENT_ID=fastn-app
+FASTN_CLIENT_SPACE_ID=your_client_space_id
+FASTN_REDIRECT_URI=https://google.com
 ```
 
 ## Usage
@@ -66,4 +80,5 @@ The agent creates:
 - Python 3.7+
 - OpenAI API key
 - Internet connection
-- Fastn.ai account (credentials hardcoded for QA environment)
+- Fastn.ai account credentials
+- Access to Fastn QA environment (or production with appropriate configuration)
