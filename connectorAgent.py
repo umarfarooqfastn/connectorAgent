@@ -627,7 +627,9 @@ Return [] if no valid cURL commands found."""},
 def generate_auth_token():
     """Generate Fastn auth token"""
     logger.info("🔑 Generating Fastn auth token...")
-    url = 'https://qa.fastn.ai/auth/realms/fastn/protocol/openid-connect/token'
+    
+    fastn_env = os.getenv("FASTN_ENV", "qa.fastn.ai")
+    url = f'https://{fastn_env}/auth/realms/fastn/protocol/openid-connect/token'
     headers = {
         'realm': 'fastn',
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -635,10 +637,10 @@ def generate_auth_token():
     
     data = {
         'grant_type': 'password',
-        'username': 'umar.farooq@fastn.ai',
-        'password': 'automation',
-        'client_id': 'fastn-app',
-        'redirect_uri': 'https://google.com',
+        'username': os.getenv("FASTN_USERNAME"),
+        'password': os.getenv("FASTN_PASSWORD"),
+        'client_id': os.getenv("FASTN_CLIENT_ID", "fastn-app"),
+        'redirect_uri': os.getenv("FASTN_REDIRECT_URI", "https://google.com"),
         'scope': 'openid'
     }
     
@@ -668,8 +670,8 @@ def call_fastn_api(function_name: str, function_args: Dict) -> Dict:
     if not fastn_auth_token:
         return {"error": "Failed to generate Fastn auth token"}
     
-    env = "qa.fastn.ai"
-    client_id = "b034812a-7d77-4e8e-945e-106656b2676e"
+    env = os.getenv("FASTN_ENV", "qa.fastn.ai")
+    client_id = os.getenv("FASTN_CLIENT_SPACE_ID", "b034812a-7d77-4e8e-945e-106656b2676e")
     url = f"https://{env}/api/v1/connectorCreationHelper"
     
     headers = {
