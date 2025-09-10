@@ -65,6 +65,5 @@ Thumbs.db
 # Application files
 oldApp.py
 
-# conversations
+# Chat session data
 conversations/
-./conversations/
