@@ -105,7 +105,7 @@ You need to pass auth configuration correctly other wise it will fail for user.
 ```bash
 curl -X POST 'https://api.openai.com/v1/chat/completions' \
 -H 'Content-Type: application/json' \
--d '{"model": "gpt-4.1-mini", "messages": [{"role": "user", "content": "Hello"}]}'
+-d '{"model": "gpt-5-mini", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
 ---
@@ -758,7 +758,7 @@ class UniversalWebScraper:
         return raw_data
     
     def extract_endpoints_with_ai(self, raw_data: Dict, client) -> List[Dict]:
-        """AI-powered endpoint extraction - page by page processing with gpt-4.1-mini"""
+        """AI-powered endpoint extraction - page by page processing with gpt-5-mini"""
         logger.info("🤖 Using AI to extract endpoints from raw page data...")
         
         all_endpoints = []
@@ -814,7 +814,7 @@ class UniversalWebScraper:
         # Build COMPREHENSIVE content - feed everything small, skip only large blocks
         filtered_content = f"# {title}\n\n"
         total_size = len(filtered_content)
-        max_size = 20000  # Increased size limit
+        max_size = 40000  # Increased size limit to ensure all parameter info is included
         
         # Priority 1: ALL Code blocks (NEVER skip - highest priority)
         code_blocks = page_data.get('code_blocks', [])
@@ -973,23 +973,59 @@ class UniversalWebScraper:
         return filtered_content if total_size > 100 else ""
     
     def _extract_curls_from_page_with_ai(self, page_content: str, page_url: str, client) -> List[Dict]:
-        """Use gpt-4.1-mini to extract cURL commands + names from raw page data"""
+        """Use gpt-5-mini to extract cURL commands + names from raw page data"""
         try:
             response = client.chat.completions.create(
-                model="gpt-4.1-mini",
+                model="gpt-5-mini",
                 messages=[
-                    {"role": "system", "content": """Extract and create proper cURL commands from API documentation for Fastn connector creation.
+                    {"role": "system", "content": """Extract and create cURL commands from API documentation fragments.
 
-You will receive full API documentation pages. Your job is to:
+You will receive fragmented API documentation with code blocks. Look for:
+- Existing cURL examples (even with auth headers)
+- API endpoint paths like "/v3/contacts", "POST /v3/campaigns" 
+- Base URLs like "https://api.getresponse.com"
+- Path parameters in {braces}
 
-1. **FIND ALL API ENDPOINTS** from the documentation (not just existing cURL commands)
-2. **CREATE PROPER cURL COMMANDS** from HTTP method descriptions, parameters, and examples
-3. **USE SINGLE QUOTES** - Always use single quotes for URLs and headers (NOT escaped double quotes)
-4. **REMOVE AUTH HEADERS** - No Authorization, Bearer tokens, or API keys in cURL
-5. **MAP PATH PARAMETERS** - Convert {id} to <<url.id>>, {userId} to <<url.userId>>
-6. **INCLUDE QUERY PARAMETERS** - Add all documented query params (required + optional)
-7. **USE FULL URLS** - Complete https://domain.com/path format
-8. **KEEP BODY STATIC** - Request body JSON should remain as static examples, NO templating inside body
+**CRITICAL RULES:**
+1. **EXTRACT FROM FRAGMENTS** - Piece together endpoints from scattered code blocks
+2. **COMPLETE CURLS REQUIRED** - Every cURL must be complete and valid with ALL documented parameters
+3. **INCLUDE ALL PARAMETERS** - Add all query parameters, path parameters, and body fields found in documentation
+4. **USE SINGLE QUOTES** - Always use single quotes in cURL commands
+5. **REMOVE AUTH HEADERS** - Strip out Authorization, X-Auth-Token, Bearer tokens
+6. **MAP PATH PARAMETERS** - Convert {contactId} to <<url.contactId>>, {campaignId} to <<url.campaignId>>
+7. **STATIC QUERY PARAMS** - Keep ?page=1&limit=100 as-is (do NOT template)
+8. **GET = NO BODY** - GET requests never have -d body data
+9. **COMPLETE URLS** - Always use full https://domain.com/path format
+10. **NO INCOMPLETE CURLS** - Every endpoint must have complete URL, proper headers, and all documented parameters
+
+**EXAMPLE INPUT FRAGMENTS:**
+```
+$ curl -H "Authorization: Bearer token123" https://api.example.com/v1/users
+```
+```
+POST /v1/items
+```
+```
+GET /v1/users/{userId}/items
+```
+
+**EXPECTED OUTPUT:**
+```json
+[
+  {
+    "name": "getUsers", 
+    "curl": "curl -X GET 'https://api.example.com/v1/users' -H 'Content-Type: application/json'"
+  },
+  {
+    "name": "createItem",
+    "curl": "curl -X POST 'https://api.example.com/v1/items' -H 'Content-Type: application/json' -d '{\"name\": \"item1\", \"type\": \"product\"}'"
+  },
+  {
+    "name": "getUserItems",
+    "curl": "curl -X GET 'https://api.example.com/v1/users/<<url.userId>>/items?page=1&limit=100' -H 'Content-Type: application/json'"
+  }
+]
+```
 
 PARAMETER MAPPING EXAMPLES:
 - {organizationId} → <<url.organizationId>>
@@ -1002,12 +1038,23 @@ QUERY PARAMETER EXAMPLES:
 - ?search=query&role=admin&sort=joinedAt
 
 BODY EXAMPLES (CORRECT - Static JSON):
-- -d '{"model": "deepseek-chat", "messages": [{"role": "user", "content": "Hello"}]}'
-- -d '{"query": "example search", "limit": 10}'
+- -d '{"name": "item1", "type": "product", "category": "electronics"}'
+- -d '{"email": "user@example.com", "firstName": "John", "lastName": "Doe"}'
 
 BODY EXAMPLES (WRONG - Do NOT template):
-- -d '{"model": "<<body.model>>", "messages": <<body.messages>>}' ❌
-- -d '{"query": "<<body.query>>"}' ❌
+- -d '{"name": "<<body.name>>", "type": "<<body.type>>"}' ❌
+- -d '{"email": "<<body.email>>"}' ❌
+
+CORRECT EXAMPLES:
+✅ GET with query params: curl -X GET 'https://api.example.com/items?page=1&limit=100'
+✅ POST with path param: curl -X POST 'https://api.example.com/users/<<url.userId>>/items' -d '{"name": "item1", "type": "product"}'
+✅ DELETE with path param: curl -X DELETE 'https://api.example.com/items/<<url.itemId>>'
+
+WRONG EXAMPLES:
+❌ GET with body: curl -X GET 'https://api.example.com/items' -d '{"page": 1}' 
+❌ Templated query params: curl -X GET 'https://api.example.com/items?page=<<url.page>>'
+❌ Duplicate params: curl -X GET 'https://api.example.com/items?page=1&page=<<url.page>>'
+❌ Auth headers: curl -X GET 'https://api.example.com/items' -H 'Authorization: Bearer token'
 
 OUTPUT FORMAT (JSON):
 [
@@ -1023,12 +1070,14 @@ OUTPUT FORMAT (JSON):
 
 Return [] if no API endpoints found."""},
                     {"role": "user", "content": f"Extract cURL commands from this page:\n\n{page_content}"}
-                ],
-                temperature=0.1,
-                max_tokens=3000
+                ]
+                
             )
             
             result_text = response.choices[0].message.content.strip()
+            
+            # DEBUG: Log AI response
+            logger.info(f"🤖 AI response for {page_url}: {result_text[:200]}...")
             
             # Parse JSON response from AI
             try:
@@ -1038,6 +1087,7 @@ Return [] if no API endpoints found."""},
                     result_text = result_text.split('```')[1].split('```')[0].strip()
                 
                 curl_data = json.loads(result_text)
+                logger.info(f"✅ Successfully parsed {len(curl_data)} endpoints from {page_url}")
                 
                 # Add source page to each item
                 for item in curl_data:
@@ -1045,8 +1095,9 @@ Return [] if no API endpoints found."""},
                 
                 return curl_data
                 
-            except json.JSONDecodeError:
-                logger.warning(f"⚠️ AI returned invalid JSON for {page_url}")
+            except json.JSONDecodeError as e:
+                logger.warning(f"⚠️ AI returned invalid JSON for {page_url}: {e}")
+                logger.warning(f"Raw response: {result_text}")
                 return []
         
         except Exception as e:

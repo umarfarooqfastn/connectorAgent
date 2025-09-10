@@ -5,7 +5,7 @@ AI-powered system for creating Fastn.ai connectors with interactive chat interfa
 ## What It Does
 
 1. **Web Scraping**: Crawls API documentation websites to extract content using Selenium WebDriver
-2. **AI Endpoint Extraction**: Uses GPT-4.1-mini to find and extract cURL commands from documentation
+2. **AI Endpoint Extraction**: Uses gpt-5-mini to find and extract cURL commands from documentation
 3. **Connector Creation**: Creates connector groups and endpoints in Fastn.ai with proper authentication
 4. **Universal Compatibility**: Works with any API documentation format (REST APIs, GraphQL, etc.)
 5. **Interactive Chat**: Conversational interface for step-by-step connector creation with session management
@@ -105,7 +105,7 @@ When using chat mode:
 
 ### Technical Features
 - **Selenium WebDriver** - Handles JavaScript-heavy documentation sites
-- **AI-Powered Extraction** - GPT-4.1-mini intelligently finds API endpoints
+- **AI-Powered Extraction** - gpt-5-mini intelligently finds API endpoints
 - **Multiple Auth Types** - OAuth, API Key, Bearer Token, Basic Auth, Custom Input
 - **Smart Content Filtering** - Extracts only API-relevant content from docs
 - **Error Handling** - Robust error handling with detailed logging

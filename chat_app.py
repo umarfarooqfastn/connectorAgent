@@ -284,12 +284,10 @@ TOOL USAGE:
                 
                 # Get AI response with tools
                 response = self.client.chat.completions.create(
-                    model="gpt-4.1-mini",
+                    model="gpt-5-mini",
                     messages=self.conversation,
                     tools=self.get_tools(),
-                    tool_choice="auto",
-                    temperature=0.7,
-                    max_tokens=2000
+                    tool_choice="auto"
                 )
                 
                 message = response.choices[0].message
@@ -330,12 +328,11 @@ TOOL USAGE:
                     
                     # Get AI's response to tool results
                     followup_response = self.client.chat.completions.create(
-                        model="gpt-4.1-mini",
+                        model="gpt-5-mini",
                         messages=self.conversation,
                         tools=self.get_tools(),
-                        tool_choice="none",  # Force text response after tool execution
-                        temperature=0.7,
-                        max_tokens=1000
+                        tool_choice="none"  # Force text response after tool execution
+                       
                     )
                     
                     followup_message = followup_response.choices[0].message
