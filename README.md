@@ -1,6 +1,6 @@
 # Connector Creator Agent
 
-AI-powered system for creating Fastn.ai connectors with both autonomous batch processing and interactive chat interfaces.
+AI-powered system for creating Fastn.ai connectors with interactive chat interfaces.
 
 ## What It Does
 
@@ -66,24 +66,12 @@ python chat_app.py --list
 python chat_app.py --resume session_20240101_143022
 ```
 
-### Batch Mode (Legacy)
-For automated processing:
-
-```bash
-python app.py <url> <platform_name> [description] [connector_group_id]
-```
-
 ### Examples
 
 **Chat mode** - Interactive conversation:
 ```bash
 python chat_app.py
 # Then chat: "I want to create a connector for OpenAI API at https://docs.openai.com/api"
-```
-
-**Batch mode** - Automated:
-```bash
-python app.py https://docs.openai.com/api OpenAI "OpenAI API integration"
 ```
 
 ## Output
