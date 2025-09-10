@@ -1,4 +1,3 @@
-from openai import OpenAI
 import requests
 import json
 import time
@@ -6,8 +5,7 @@ import os
 from dotenv import load_dotenv
 import urllib.parse
 from bs4 import BeautifulSoup
-import re
-from typing import Dict, List, Optional
+from typing import Dict, List
 import logging
 from datetime import datetime
 from selenium import webdriver
@@ -67,6 +65,11 @@ You need to pass auth configuration correctly other wise it will fail for user.
 ## cURL Command Processing and Mapping
 
 **Variable names must always be valid, generic, and descriptive (e.g., baseUrl, storeName, itemId, productId, limit, offset, etc.)**
+
+**CRITICAL: Always use single quotes in cURL commands - Never use escaped double quotes**
+- ✅ Correct: `curl -X GET 'https://api.example.com' -H 'Content-Type: application/json'`  
+- ❌ Wrong: `curl -X GET \"https://api.example.com\" -H \"Content-Type: application/json\"`
+
 ### ✅ Correct Syntax - Use ONLY This Format
 - **Base URL / Host:** 
   - **Only map as <<url.baseUrl>> if the URL varies per user** (e.g., custom domains, regions, instances)
@@ -99,57 +102,57 @@ You need to pass auth configuration correctly other wise it will fail for user.
 ---
 
 ### 1. Static API Endpoint (OpenAI example - NO baseUrl mapping)
-\`\`\`bash
-curl -X POST "https://api.openai.com/v1/chat/completions" \\
--H "Content-Type: application/json" \\
+```bash
+curl -X POST 'https://api.openai.com/v1/chat/completions' \
+-H 'Content-Type: application/json' \
 -d '{"model": "gpt-4.1-mini", "messages": [{"role": "user", "content": "Hello"}]}'
-\`\`\`
+```
 
 ---
 
 ### 2. Dynamic Base URL (when it varies per user)
-\`\`\`bash
-curl -X GET "https://<<url.baseUrl>>/api/v1/items" \\
--H "Content-Type: application/json"
-\`\`\`
+```bash
+curl -X GET 'https://<<url.baseUrl>>/api/v1/items' \
+-H 'Content-Type: application/json'
+```
 
 ---
 
 ### 3. Get a Single Item by Path Param
-\`\`\`bash
-curl -X GET "https://api.service.com/api/v1/items/<<url.itemId>>" \\
--H "Content-Type: application/json" \\
--H "X-Correlation-Id: <<auth.correlationId>>"
-\`\`\`
+```bash
+curl -X GET 'https://api.service.com/api/v1/items/<<url.itemId>>' \
+-H 'Content-Type: application/json' \
+-H 'X-Correlation-Id: <<auth.correlationId>>'
+```
 
 ---
 
 ### 4. Get Products with Shopify Store Name (user-specific subdomain)
-\`\`\`bash
-curl -X GET "https://<<url.storeName>>.myshopify.com/admin/api/2025-07/products.json" \\
--H "Content-Type: application/json"
-\`\`\`
+```bash
+curl -X GET 'https://<<url.storeName>>.myshopify.com/admin/api/2025-07/products.json' \
+-H 'Content-Type: application/json'
+```
 
 ---
 
 ### 5. Static Endpoint with Query Parameters
-\`\`\`bash
-curl -X GET "https://api.stripe.com/v1/customers?limit=10" \\
--H "Content-Type: application/json"
-\`\`\`
+```bash
+curl -X GET 'https://api.stripe.com/v1/customers?limit=10' \
+-H 'Content-Type: application/json'
+```
 
 ---
 
 ### 6. Create with Static Endpoint and Body
-\`\`\`bash
-curl -X POST "https://api.openai.com/v1/completions" \\
--H "Content-Type: application/json" \\
+```bash
+curl -X POST 'https://api.openai.com/v1/completions' \
+-H 'Content-Type: application/json' \
 -d '{
   "model": "text-davinci-003",
   "prompt": "Hello world",
   "max_tokens": 100
 }'
-\`\`\`
+```
 
 ## Authentication Configuration
 Whether you are importing a file or creating a custom connector, you must handle connector groups and authentication correctly.
@@ -969,86 +972,6 @@ class UniversalWebScraper:
         
         return filtered_content if total_size > 100 else ""
     
-    def _smart_filter_text_content(self, text_content: str) -> str:
-        """Smart filtering to keep API-relevant content and remove marketing fluff"""
-        if not text_content:
-            return ""
-        
-        # Split into paragraphs
-        paragraphs = [p.strip() for p in text_content.split('\n') if p.strip()]
-        
-        # Keywords that indicate useful API documentation
-        keep_keywords = [
-            'curl', 'http', 'api', 'endpoint', 'request', 'response', 'parameter', 'auth',
-            'bearer', 'token', 'header', 'body', 'json', 'get', 'post', 'put', 'delete',
-            'patch', 'query', 'path', 'required', 'optional', 'example', 'schema',
-            'application/json', 'authorization', 'content-type', 'accept'
-        ]
-        
-        # Keywords that indicate marketing/useless content
-        skip_keywords = [
-            'explore how', 'transform your', 'read the docs', 'sign up', 'log in',
-            'contact support', 'powered by', 'was this helpful', 'browse this site',
-            'accept cookies', 'privacy policy', 'terms of service', 'careers', 'blog',
-            'showcase', 'company', 'community', 'resources'
-        ]
-        
-        filtered_paragraphs = []
-        
-        for paragraph in paragraphs:
-            para_lower = paragraph.lower()
-            
-            # Skip very short paragraphs (likely navigation)
-            if len(paragraph) < 20:
-                continue
-            
-            # Skip marketing/navigation content
-            if any(skip_word in para_lower for skip_word in skip_keywords):
-                continue
-            
-            # Skip very long paragraphs (likely marketing content) unless they contain API keywords
-            if len(paragraph) > 500:
-                if not any(keep_word in para_lower for keep_word in keep_keywords):
-                    continue
-                # If it's long but has API content, truncate it
-                paragraph = paragraph[:500] + "..."
-            
-            # Keep paragraphs with API-relevant keywords
-            if any(keep_word in para_lower for keep_word in keep_keywords):
-                filtered_paragraphs.append(paragraph)
-            # Also keep shorter paragraphs that might be API descriptions
-            elif len(paragraph) < 200:
-                filtered_paragraphs.append(paragraph)
-        
-        return '\n\n'.join(filtered_paragraphs)
-    
-    def _is_api_relevant_text(self, text: str) -> bool:
-        """Check if text contains API-relevant information"""
-        if not text or len(text) < 20:
-            return False
-        
-        text_lower = text.lower()
-        
-        # API-relevant keywords
-        api_keywords = [
-            'endpoint', 'parameter', 'query', 'header', 'body', 'request', 'response',
-            'curl', 'http', 'get', 'post', 'put', 'delete', 'patch', 'api',
-            'authorization', 'bearer', 'token', 'required', 'optional',
-            'json', 'application/json', 'content-type', 'accept',
-            'path', 'url', 'method', 'status', 'code', 'example'
-        ]
-        
-        # Skip marketing/navigation content
-        skip_keywords = [
-            'sign up', 'log in', 'explore how', 'powered by', 'contact support',
-            'was this helpful', 'browse this site', 'accept cookies'
-        ]
-        
-        if any(skip in text_lower for skip in skip_keywords):
-            return False
-            
-        return any(keyword in text_lower for keyword in api_keywords)
-    
     def _extract_curls_from_page_with_ai(self, page_content: str, page_url: str, client) -> List[Dict]:
         """Use gpt-4.1-mini to extract cURL commands + names from raw page data"""
         try:
@@ -1061,10 +984,12 @@ You will receive full API documentation pages. Your job is to:
 
 1. **FIND ALL API ENDPOINTS** from the documentation (not just existing cURL commands)
 2. **CREATE PROPER cURL COMMANDS** from HTTP method descriptions, parameters, and examples
-3. **REMOVE AUTH HEADERS** - No Authorization, Bearer tokens, or API keys in cURL
-4. **MAP PATH PARAMETERS** - Convert {id} to <<url.id>>, {userId} to <<url.userId>>
-5. **INCLUDE QUERY PARAMETERS** - Add all documented query params (required + optional)
-6. **USE FULL URLS** - Complete https://domain.com/path format
+3. **USE SINGLE QUOTES** - Always use single quotes for URLs and headers (NOT escaped double quotes)
+4. **REMOVE AUTH HEADERS** - No Authorization, Bearer tokens, or API keys in cURL
+5. **MAP PATH PARAMETERS** - Convert {id} to <<url.id>>, {userId} to <<url.userId>>
+6. **INCLUDE QUERY PARAMETERS** - Add all documented query params (required + optional)
+7. **USE FULL URLS** - Complete https://domain.com/path format
+8. **KEEP BODY STATIC** - Request body JSON should remain as static examples, NO templating inside body
 
 PARAMETER MAPPING EXAMPLES:
 - {organizationId} → <<url.organizationId>>
@@ -1076,15 +1001,23 @@ QUERY PARAMETER EXAMPLES:
 - ?page=1&limit=50&order=desc (include documented optional params)
 - ?search=query&role=admin&sort=joinedAt
 
+BODY EXAMPLES (CORRECT - Static JSON):
+- -d '{"model": "deepseek-chat", "messages": [{"role": "user", "content": "Hello"}]}'
+- -d '{"query": "example search", "limit": 10}'
+
+BODY EXAMPLES (WRONG - Do NOT template):
+- -d '{"model": "<<body.model>>", "messages": <<body.messages>>}' ❌
+- -d '{"query": "<<body.query>>"}' ❌
+
 OUTPUT FORMAT (JSON):
 [
   {
     "name": "listOrganizationMembers",
-    "curl": "curl -X GET \"https://api.gitbook.com/v1/orgs/<<url.organizationId>>/members?page=1&limit=50&order=desc\" -H \"Content-Type: application/json\" -H \"Accept: application/json\""
+    "curl": "curl -X GET 'https://api.gitbook.com/v1/orgs/<<url.organizationId>>/members?page=1&limit=50&order=desc' -H 'Content-Type: application/json' -H 'Accept: application/json'"
   },
   {
     "name": "updateOrganizationMember",
-    "curl": "curl -X PATCH \"https://api.gitbook.com/v1/orgs/<<url.organizationId>>/members/<<url.userId>>\" -H \"Content-Type: application/json\" -H \"Accept: application/json\" -d '{\"role\": \"admin\"}'"
+    "curl": "curl -X PATCH 'https://api.gitbook.com/v1/orgs/<<url.organizationId>>/members/<<url.userId>>' -H 'Content-Type: application/json' -H 'Accept: application/json' -d '{\"role\": \"admin\"}'"
   }
 ]
 
@@ -1158,6 +1091,7 @@ def generate_auth_token():
         logger.error(f"❌ Failed to generate Fastn auth token: {str(e)}")
         return None
 
+
 def call_fastn_api(function_name: str, function_args: Dict) -> Dict:
     """Call Fastn API with logging"""
     logger.info(f"🔧 Calling Fastn API: {function_name}")
@@ -1175,7 +1109,7 @@ def call_fastn_api(function_name: str, function_args: Dict) -> Dict:
         "Content-Type": "application/json",
         "x-fastn-space-id": client_id_,
         "x-fastn-space-tenantid": "",
-        "stage": "LIVE",
+        "stage": "DRAFT",
         "x-fastn-custom-auth": "true",
         "authorization": fastn_auth_token
     }
@@ -1204,324 +1138,3 @@ def call_fastn_api(function_name: str, function_args: Dict) -> Dict:
         logger.error(f"❌ {error_msg}")
         return {"error": error_msg}
 
-def autonomous_universal_agent(url: str, platform_name: str, description: str = "", connector_group_id: str = None) -> Dict:
-    """Universal autonomous agent with original system prompt"""
-    
-    start_time = time.time()
-    
-    logger.info("🤖 STARTING AUTONOMOUS UNIVERSAL AGENT")
-    logger.info("=" * 60)
-    logger.info(f"🎯 Platform: {platform_name}")
-    logger.info(f"🔗 URL: {url}")
-    logger.info(f"📄 Description: {description}")
-    logger.info("=" * 60)
-    
-    # Initialize components
-    data_persistence = DataPersistence(platform_name)
-    
-    # Enable Selenium for JavaScript-heavy sites (you can make this configurable)
-    use_selenium = True  # Set to False for static HTML sites
-    scraper = UniversalWebScraper(data_persistence, use_selenium=use_selenium)
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    
-    try:
-        # STEP 1: Universal Scraping
-        logger.info("\n" + "="*60)
-        logger.info("🌐 STEP 1: UNIVERSAL WEB SCRAPING")
-        logger.info("="*60)
-        
-        # Get max pages from environment variable, default to 10
-        max_pages = int(os.getenv("MAX_PAGES", "10"))
-        logger.info(f"🔢 Max pages to scrape: {max_pages}")
-        
-        raw_data = scraper.scrape_comprehensive(url, max_pages=max_pages)
-        
-        # STEP 2: AI-Powered Endpoint Extraction  
-        logger.info("\n" + "="*60)
-        logger.info("🤖 STEP 2: AI-POWERED ENDPOINT EXTRACTION")
-        logger.info("="*60)
-        
-        extracted_endpoints = scraper.extract_endpoints_with_ai(raw_data, client)
-        
-        # STEP 3: Autonomous AI Processing with Original System Prompt
-        logger.info("\n" + "="*60)
-        logger.info("🤖 STEP 3: AUTONOMOUS AI PROCESSING")
-        logger.info("="*60)
-        
-        messages = [
-            {"role": "system", "content": ORIGINAL_SYSTEM_PROMPT},
-            {"role": "user", "content": f"""
-AUTONOMOUS MISSION: Create complete connector integration for {platform_name}
-
-EXTRACTED DATA:
-- Pages Scraped: {raw_data.get('total_pages_scraped', 0)}
-- Endpoints Found: {len(extracted_endpoints)}
-- Platform Description: {description}
-- Existing Group ID: {connector_group_id or 'None - create new'}
-
-EXTRACTED CURLS:
-{json.dumps(extracted_endpoints, indent=2)}
-
-These are raw cURL commands extracted from the documentation. Use them directly to create connectors.
-
-CRITICAL RULES:
-1. **NO DUPLICATES**: Track what you create. Do NOT create duplicate endpoints with same functionality
-2. **USE EXISTING GROUP**: If connector_group_id is provided, use it. Do NOT create new groups
-3. **UNIQUE NAMES**: Each endpoint must have a unique name within the group
-4. **VARIABLE MAPPING**: 
-   - Base URL: ONLY map as <<url.baseUrl>> if it varies per user (Shopify stores, custom domains)
-     * DeepSeek: Keep "https://api.deepseek.com" static (same for all users)
-     * Shopify: Use "https://<<url.storeName>>.myshopify.com" (varies per user)  
-   - Path parameters: Map as <<url.paramName>> ONLY for dynamic IDs/values
-     * Static paths like "/chat/completions" stay as-is
-     * Dynamic paths like "/products/{id}" become "/products/<<url.productId>>"
-
-Execute the complete workflow autonomously:
-1. If connector_group_id provided: USE IT, do NOT create new group
-2. If no connector_group_id: Create new group with auth config
-3. Create UNIQUE endpoints (avoid duplicates with same URL/functionality)
-4. Track created endpoints to prevent duplicates
-5. Complete without asking confirmation
-"""}
-        ]
-        
-        tools = [
-            {
-                "type": "function", 
-                "function": {
-                    "name": "get_connector_groups",
-                    "description": "Get existing connector groups",
-                    "parameters": {"type": "object", "properties": {}}
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "create_connector_group", 
-                    "description": "Create connector group with auth config",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "auth": {
-                                "type": "object",
-                                "properties": {
-                                    "type": {"type": "string", "enum": ["oauth", "customInput", "basic", "apiKey", "bearerToken"]},
-                                    "details": {"type": "object"}
-                                }
-                            }
-                        },
-                        "required": ["name", "auth"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "create_connector_endpoint_under_group",
-                    "description": "Create connector endpoint from cURL",
-                    "parameters": {
-                        "type": "object", 
-                        "properties": {
-                            "name": {"type": "string"},
-                            "curl": {"type": "string"},
-                            "connectorGroupId": {"type": "string"}
-                        },
-                        "required": ["name", "curl", "connectorGroupId"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "create_connector_from_python_function",
-                    "description": "Create connector from Python function",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "python_code": {"type": "string"},
-                            "input_schema": {"type": "object"},
-                            "connectorGroupId": {"type": "string"}
-                        },
-                        "required": ["name", "python_code", "input_schema", "connectorGroupId"]
-                    }
-                }
-            }
-        ]
-        
-        # Execute autonomous workflow with context tracking
-        created_endpoints = []
-        connector_group_created = None
-        created_endpoint_names = set()  # Track created endpoint names to prevent duplicates
-        
-        max_iterations = 20
-        iteration = 0
-        
-        while iteration < max_iterations:
-            iteration += 1
-            logger.info(f"🤖 AI Iteration {iteration}/{max_iterations}")
-            
-            try:
-                response = client.chat.completions.create(
-                    model="gpt-4.1-mini",
-                    messages=messages,
-                    tools=tools,
-                    tool_choice="auto",
-                    temperature=0.1
-                )
-                
-                message = response.choices[0].message
-                # Convert message to dict format for messages array
-                message_dict = {
-                    "role": "assistant",
-                    "content": message.content
-                }
-                if message.tool_calls:
-                    message_dict["tool_calls"] = [
-                        {
-                            "id": tool_call.id,
-                            "type": "function",
-                            "function": {
-                                "name": tool_call.function.name,
-                                "arguments": tool_call.function.arguments
-                            }
-                        } for tool_call in message.tool_calls
-                    ]
-                messages.append(message_dict)
-                
-                if message.tool_calls:
-                    # Process all tool calls and collect responses
-                    tool_responses = []
-                    
-                    for tool_call in message.tool_calls:
-                        function_name = tool_call.function.name
-                        function_args = json.loads(tool_call.function.arguments)
-                        
-                        logger.info(f"🔧 Executing: {function_name}")
-                        
-                        result = call_fastn_api(function_name, function_args)
-                        
-                        # Track progress
-                        if function_name == "create_connector_group" and "error" not in result:
-                            connector_group_created = result.get("connectorGroupId") or result.get("id")
-                            logger.info(f"✅ Connector group created: {connector_group_created}")
-                            
-                        elif function_name == "create_connector_endpoint_under_group" and "error" not in result:
-                            endpoint_name = function_args.get("name")
-                            created_endpoint_names.add(endpoint_name)  # Track for duplicate prevention
-                            created_endpoints.append({
-                                "name": endpoint_name,
-                                "curl": function_args.get("curl"),
-                                "result": result
-                            })
-                            logger.info(f"✅ Endpoint created ({len(created_endpoints)}): {endpoint_name}")
-                        
-                        # Collect tool response
-                        tool_responses.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": function_name,
-                            "content": json.dumps(result)
-                        })
-                    
-                    # Add all tool responses at once
-                    messages.extend(tool_responses)
-                    
-                    # Add context update for created endpoints (only once per iteration)
-                    if any(endpoint for endpoint in created_endpoints):
-                        endpoint_names = [ep['name'] for ep in created_endpoints]
-                        messages.append({
-                            "role": "system", 
-                            "content": f"CONTEXT UPDATE: You have created {len(created_endpoints)} endpoint(s): {', '.join(endpoint_names)}. Do NOT create duplicate endpoints with the same names or functionality."
-                        })
-                else:
-                    logger.info(f"🎯 AI completed: {message.content}")
-                    break
-            
-            except Exception as e:
-                logger.error(f"❌ AI error in iteration {iteration}: {str(e)}")
-                break
-        
-        # Calculate execution time
-        end_time = time.time()
-        execution_time = end_time - start_time
-        execution_minutes = execution_time // 60
-        execution_seconds = execution_time % 60
-        
-        # Final results
-        final_results = {
-            "platform_name": platform_name,
-            "url": url,
-            "description": description,
-            "scraping_summary": {
-                "total_pages_scraped": raw_data.get('total_pages_scraped', 0),
-                "endpoints_extracted": len(extracted_endpoints)
-            },
-            "connector_group_id": connector_group_created or connector_group_id,
-            "created_endpoints": created_endpoints,
-            "execution_summary": {
-                "total_iterations": iteration,
-                "endpoints_created": len(created_endpoints),
-                "completion_timestamp": datetime.now().isoformat(),
-                "execution_time_seconds": round(execution_time, 2),
-                "execution_time_formatted": f"{int(execution_minutes)}m {execution_seconds:.2f}s"
-            }
-        }
-        
-        data_persistence.save_results(final_results)
-        
-        logger.info("🎉 AUTONOMOUS UNIVERSAL AGENT COMPLETED!")
-        logger.info(f"📊 Pages: {raw_data.get('total_pages_scraped', 0)} | Endpoints: {len(extracted_endpoints)}")
-        logger.info(f"⏱️ Total execution time: {int(execution_minutes)}m {execution_seconds:.2f}s")
-        
-        return final_results
-        
-    except Exception as e:
-        end_time = time.time()
-        execution_time = end_time - start_time
-        execution_minutes = execution_time // 60
-        execution_seconds = execution_time % 60
-        
-        error_msg = f"💥 Critical error: {str(e)}"
-        logger.error(error_msg)
-        logger.info(f"⏱️ Execution time before error: {int(execution_minutes)}m {execution_seconds:.2f}s")
-        return {"error": str(e)}
-
-def main():
-    """CLI for autonomous universal agent"""
-    import sys
-    
-    if len(sys.argv) < 3:
-        print("Usage: python app.py <url> <platform_name> [description] [connector_group_id]")
-        print("Example: python app.py https://docs.example.com/api MyAPI 'API Description' optional_group_id")
-        return
-    
-    url = sys.argv[1]
-    platform_name = sys.argv[2]
-    description = sys.argv[3] if len(sys.argv) > 3 else ""
-    connector_group_id = sys.argv[4] if len(sys.argv) > 4 else None
-    
-    result = autonomous_universal_agent(url, platform_name, description, connector_group_id)
-    
-    print("\n🎯 RESULTS:")
-    print("=" * 50)
-    if "error" in result:
-        print(f"❌ Error: {result['error']}")
-    else:
-        print(f"✅ Platform: {result.get('platform_name', 'Unknown')}")
-        print(f"📊 Pages: {result.get('scraping_summary', {}).get('total_pages_scraped', 0)}")
-        print(f"🔍 Extracted: {result.get('scraping_summary', {}).get('endpoints_extracted', 0)}")
-        print(f"🏗️ Created: {result.get('execution_summary', {}).get('endpoints_created', 0)}")
-        print(f"⏱️ Execution time: {result.get('execution_summary', {}).get('execution_time_formatted', 'Unknown')}")
-        
-        created_endpoints = result.get('created_endpoints', [])
-        if created_endpoints:
-            print(f"\n📋 Created Endpoints:")
-            for i, endpoint in enumerate(created_endpoints, 1):
-                print(f"  {i}. ✅ {endpoint.get('name', 'Unknown')}")
-    
-    print("=" * 50)
-
-if __name__ == "__main__":
-    main()

@@ -1,13 +1,14 @@
 # Connector Creator Agent
 
-An autonomous AI agent that creates Fastn.ai connectors by scraping API documentation and automatically generating connector endpoints.
+AI-powered system for creating Fastn.ai connectors with both autonomous batch processing and interactive chat interfaces.
 
 ## What It Does
 
-1. **Web Scraping**: Crawls API documentation websites to extract content
+1. **Web Scraping**: Crawls API documentation websites to extract content using Selenium WebDriver
 2. **AI Endpoint Extraction**: Uses GPT-4.1-mini to find and extract cURL commands from documentation
-3. **Autonomous Connector Creation**: Automatically creates connector groups and endpoints in Fastn.ai
+3. **Connector Creation**: Creates connector groups and endpoints in Fastn.ai with proper authentication
 4. **Universal Compatibility**: Works with any API documentation format (REST APIs, GraphQL, etc.)
+5. **Interactive Chat**: Conversational interface for step-by-step connector creation with session management
 
 ## Setup
 
@@ -51,39 +52,76 @@ MAX_PAGES=10    # Maximum number of pages to scrape (default: 10)
 
 ## Usage
 
+### Chat Mode (Recommended)
+Interactive conversational interface with session management:
+
+```bash
+# Start new chat session
+python chat_app.py
+
+# List previous chat sessions
+python chat_app.py --list
+
+# Resume existing session
+python chat_app.py --resume session_20240101_143022
+```
+
+### Batch Mode (Legacy)
+For automated processing:
+
 ```bash
 python app.py <url> <platform_name> [description] [connector_group_id]
 ```
 
 ### Examples
 
-Create new connector group:
+**Chat mode** - Interactive conversation:
+```bash
+python chat_app.py
+# Then chat: "I want to create a connector for OpenAI API at https://docs.openai.com/api"
+```
+
+**Batch mode** - Automated:
 ```bash
 python app.py https://docs.openai.com/api OpenAI "OpenAI API integration"
 ```
 
-Use existing connector group:
-```bash
-python app.py https://api.stripe.com/docs Stripe "Payment processing" existing_group_id
-```
-
 ## Output
 
-The agent creates:
+The system creates:
 - **Connector Groups**: With proper authentication configuration
 - **Connector Endpoints**: From extracted cURL commands
 - **Local Data**: Scraped data and results saved in `scraped_data/` directory
+- **Chat Sessions**: Conversation history saved in `conversations/` directory (chat mode only)
 - **Logs**: Execution logs in `app.log`
 
 ## Features
 
-- **Autonomous operation** (no manual intervention required)
-- **JavaScript support** (Selenium WebDriver for dynamic content)
-- **Intelligent duplicate detection**
-- **Multiple authentication types** (OAuth, API Key, Bearer Token, etc.)
-- **Comprehensive logging and data persistence**
-- **Error handling and retry logic**
-- **Fallback scraping** (tries Selenium first, falls back to requests)
+### Chat Mode Features 💬
+- **🗣️ Natural Conversation** - Chat naturally about what connector you want to create
+- **📁 Session Management** - Resume previous conversations anytime
+- **🔄 Persistent History** - All conversations saved locally in JSON format
+- **🤖 Tool Integration** - AI automatically uses scraping and connector creation tools
+- **📝 Session Listing** - View and resume any previous chat session
+- **🎯 Context Awareness** - Remembers platform names and connector group IDs across conversation
+
+### Chat Workflow
+When using chat mode:
+
+1. **💬 Start Chat** - Natural conversation about your needs
+2. **🌐 AI Scrapes** - Agent automatically scrapes documentation when you provide URL
+3. **🔍 Review Endpoints** - AI shows what endpoints it found
+4. **🏗️ Create Group** - AI suggests auth config and creates connector group
+5. **🔧 Build Endpoints** - AI creates each endpoint with proper cURL commands
+6. **💾 Save Session** - Everything saved for future reference
+
+### Technical Features
+- **Selenium WebDriver** - Handles JavaScript-heavy documentation sites
+- **AI-Powered Extraction** - GPT-4.1-mini intelligently finds API endpoints
+- **Multiple Auth Types** - OAuth, API Key, Bearer Token, Basic Auth, Custom Input
+- **Smart Content Filtering** - Extracts only API-relevant content from docs
+- **Error Handling** - Robust error handling with detailed logging
+- **Session Persistence** - Resume conversations from exactly where you left off
 
 ## Requirements
 
