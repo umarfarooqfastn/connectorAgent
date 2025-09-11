@@ -976,7 +976,7 @@ class UniversalWebScraper:
         """Use gpt-5-mini to extract cURL commands + names from raw page data"""
         try:
             response = client.chat.completions.create(
-                model="gpt-5-mini",
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": """Extract and create cURL commands from API documentation fragments.
 
@@ -991,7 +991,7 @@ You will receive fragmented API documentation with code blocks. Look for:
 2. **COMPLETE CURLS REQUIRED** - Every cURL must be complete and valid with ALL documented parameters
 3. **INCLUDE ALL PARAMETERS** - Add all query parameters, path parameters, and body fields found in documentation
 4. **USE SINGLE QUOTES** - Always use single quotes in cURL commands
-5. **REMOVE AUTH HEADERS** - Strip out Authorization, X-Auth-Token, Bearer tokens
+5. **KEEP ALL HEADERS** - Include ALL headers from documentation (Authorization, Content-Type, Accept, etc.)
 6. **MAP PATH PARAMETERS** - Convert {contactId} to <<url.contactId>>, {campaignId} to <<url.campaignId>>
 7. **STATIC QUERY PARAMS** - Keep ?page=1&limit=100 as-is (do NOT template)
 8. **GET = NO BODY** - GET requests never have -d body data
@@ -1014,15 +1014,15 @@ GET /v1/users/{userId}/items
 [
   {
     "name": "getUsers", 
-    "curl": "curl -X GET 'https://api.example.com/v1/users' -H 'Content-Type: application/json'"
+    "curl": "curl -X GET 'https://api.example.com/v1/users' -H 'Authorization: Bearer token123' -H 'Content-Type: application/json'"
   },
   {
     "name": "createItem",
-    "curl": "curl -X POST 'https://api.example.com/v1/items' -H 'Content-Type: application/json' -d '{\"name\": \"item1\", \"type\": \"product\"}'"
+    "curl": "curl -X POST 'https://api.example.com/v1/items' -H 'Content-Type: application/json' -H 'Accept: application/json' -d '{\"name\": \"item1\", \"type\": \"product\"}'"
   },
   {
     "name": "getUserItems",
-    "curl": "curl -X GET 'https://api.example.com/v1/users/<<url.userId>>/items?page=1&limit=100' -H 'Content-Type: application/json'"
+    "curl": "curl -X GET 'https://api.example.com/v1/users/<<url.userId>>/items?page=1&limit=100' -H 'Content-Type: application/json' -H 'Accept: application/json'"
   }
 ]
 ```
@@ -1054,7 +1054,7 @@ WRONG EXAMPLES:
 ❌ GET with body: curl -X GET 'https://api.example.com/items' -d '{"page": 1}' 
 ❌ Templated query params: curl -X GET 'https://api.example.com/items?page=<<url.page>>'
 ❌ Duplicate params: curl -X GET 'https://api.example.com/items?page=1&page=<<url.page>>'
-❌ Auth headers: curl -X GET 'https://api.example.com/items' -H 'Authorization: Bearer token'
+❌ Missing headers: curl -X GET 'https://api.example.com/items' (should include Content-Type, Accept, etc.)
 
 OUTPUT FORMAT (JSON):
 [
@@ -1070,7 +1070,9 @@ OUTPUT FORMAT (JSON):
 
 Return [] if no API endpoints found."""},
                     {"role": "user", "content": f"Extract cURL commands from this page:\n\n{page_content}"}
-                ]
+                ],
+                temperature=0.1,
+                max_tokens=8000
                 
             )
             
