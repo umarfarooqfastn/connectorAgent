@@ -67,3 +67,5 @@ oldApp.py
 
 # Chat session data
 conversations/
+learning/
+crawler/

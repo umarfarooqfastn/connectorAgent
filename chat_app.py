@@ -6,13 +6,16 @@ Uses OpenAI function tools for clean interaction
 
 import json
 import os
+import time
+import sys
 from datetime import datetime
 from openai import OpenAI
 from dotenv import load_dotenv
 import logging
+import re
 
 # Import existing components
-from app import UniversalWebScraper, DataPersistence, call_fastn_api, ORIGINAL_SYSTEM_PROMPT
+from fastn_function import call_fastn_api, ORIGINAL_SYSTEM_PROMPT
 
 load_dotenv()
 
@@ -181,27 +184,67 @@ class ChatConnectorAgent:
             # Save session data
             self.platform_name = platform_name
             
-            # Initialize scraper
-            data_persistence = DataPersistence(platform_name)
-            scraper = UniversalWebScraper(data_persistence, use_selenium=True)
-            
-            # Scrape
-            max_pages = int(os.getenv("MAX_PAGES", "1"))
-            raw_data = scraper.scrape_comprehensive(url, max_pages=max_pages)
-            
-            # Extract endpoints
-            extracted_endpoints = scraper.extract_endpoints_with_ai(raw_data, self.client)
-            self.scraped_endpoints = extracted_endpoints
-            
-            # Return complete extracted endpoints data for AI
-            result = {
-                "status": "success",
-                "pages_scraped": raw_data.get('total_pages_scraped', 0),
-                "endpoints_found": len(extracted_endpoints),
-                "extracted_endpoints": extracted_endpoints  # Full data with complete cURLs
+            # Use fastn_function to extract endpoints
+            params = {
+                'data': {
+                    'input': {
+                        'pageUrl': url
+                    }
+                }
             }
             
-            return json.dumps(result)
+            try:
+                # Call fastn_function
+                from fastn_function import fastn_function
+                start_time = time.time()
+                
+                logger.info(f"🚀 Starting API extraction from URL: {url}")
+                result = fastn_function(params)
+                
+                # Format extracted endpoints
+                extracted_endpoints = []
+                if result.get("curl_commands") and isinstance(result["curl_commands"], list):
+                    for cmd in result["curl_commands"]:
+                        if isinstance(cmd, dict) and "name" in cmd and "curl" in cmd:
+                            endpoint = {
+                                "name": cmd.get("name", ""),
+                                "method": self._extract_method(cmd.get("curl", "")),
+                                "url": self._extract_url(cmd.get("curl", "")),
+                                "curl": cmd.get("curl", "")
+                            }
+                            extracted_endpoints.append(endpoint)
+                
+                self.scraped_endpoints = extracted_endpoints
+                
+                # Calculate execution time
+                total_time = time.time() - start_time
+                
+                logger.info(f"✅ Found {len(extracted_endpoints)} endpoints in {total_time:.2f} seconds")
+                
+                # Build result
+                api_result = {
+                    "status": "success",
+                    "pages_scraped": 1,
+                    "endpoints_found": len(extracted_endpoints),
+                    "extracted_endpoints": extracted_endpoints,
+                    "execution_time": {
+                        "total_seconds": round(total_time, 2),
+                        "scraping_seconds": round(float(result.get("executionTime", "0 seconds").split()[0]), 2),
+                        "extraction_seconds": round(total_time - float(result.get("executionTime", "0 seconds").split()[0]), 2)
+                    }
+                }
+                
+                return json.dumps(api_result)
+                
+            except Exception as e:
+                logger.error(f"❌ Error using fastn_function: {str(e)}")
+                error_result = {
+                    "status": "failed",
+                    "error": str(e),
+                    "endpoints_found": 0,
+                    "extracted_endpoints": []
+                }
+                return json.dumps(error_result)
             
         elif tool_name == "create_connector_group":
             result = call_fastn_api(tool_name, arguments)
@@ -231,7 +274,6 @@ class ChatConnectorAgent:
         return 'GET'
     
     def _extract_url(self, curl: str) -> str:
-        import re
         match = re.search(r'"(https?://[^"]*)"', curl)
         return match.group(1) if match else "unknown"
     
